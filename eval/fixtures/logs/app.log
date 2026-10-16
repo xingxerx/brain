@@ -1,0 +1,7 @@
+2026-10-14 09:00:01 INFO server started on port 8080
+2026-10-14 09:05:12 WARN slow request /api/items 1200ms
+2026-10-14 09:07:44 ERROR database timeout
+2026-10-14 09:10:02 INFO request /api/items 120ms
+2026-10-14 09:12:30 ERROR cache miss storm
+2026-10-14 09:15:00 INFO health check ok
+2026-10-14 09:20:18 ERROR upstream 502

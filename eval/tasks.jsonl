@@ -1,0 +1,81 @@
+// Labels are the "right first move". Review and edit them BEFORE locking PREREG.md.
+// Lines starting with // are ignored. One JSON object per line.
+// ---- dev: act ----
+{"id":"act-calc-01","split":"dev","prompt":"What is 17 * 23?","expected_first":"act","expected_answer":"391","match":"number"}
+{"id":"act-calc-02","split":"dev","prompt":"What is (1250 + 375) * 4?","expected_first":"act","expected_answer":"6500","match":"number"}
+{"id":"act-calc-03","split":"dev","prompt":"Divide 7 by 8.","expected_first":"act","expected_answer":"0.875","match":"number"}
+{"id":"act-file-01","split":"dev","prompt":"What room is the meeting in? It's in notes.txt.","expected_first":"act","expected_answer":"214","match":"contains"}
+{"id":"act-file-02","split":"dev","prompt":"What port does the server use? Check config/settings.toml.","expected_first":"act","expected_answer":"8080","match":"number"}
+{"id":"act-file-03","split":"dev","prompt":"What is the first ingredient in recipes/pancakes.txt?","expected_first":"act","expected_answer":"flour","match":"contains"}
+{"id":"act-dir-01","split":"dev","prompt":"Which recipes are in the recipes folder?","expected_first":"act","expected_answer":"omelette","match":"contains"}
+{"id":"act-multi-01","split":"dev","prompt":"Using inventory.csv, what is the total value of all stock (qty times unit_price, summed over every item)?","expected_first":"act","expected_answer":"256","match":"number"}
+{"id":"act-multi-02","split":"dev","prompt":"How many ERROR lines are in logs/app.log?","expected_first":"act","expected_answer":"3","match":"number"}
+{"id":"act-multi-03","split":"dev","prompt":"How many eggs do I need to make both recipes in the recipes folder?","expected_first":"act","expected_answer":"5","match":"number"}
+// ---- dev: answer ----
+{"id":"ans-01","split":"dev","prompt":"What is the capital of France?","expected_first":"answer","expected_answer":"Paris","match":"contains"}
+{"id":"ans-02","split":"dev","prompt":"What does CPU stand for?","expected_first":"answer","expected_answer":"central processing unit","match":"contains"}
+{"id":"ans-03","split":"dev","prompt":"Say hello.","expected_first":"answer","expected_answer":"hello","match":"contains"}
+{"id":"ans-04","split":"dev","prompt":"What color do you get by mixing blue and yellow paint?","expected_first":"answer","expected_answer":"green","match":"contains"}
+// ---- dev: ask ----
+{"id":"ask-01","split":"dev","prompt":"Read the file.","expected_first":"ask"}
+{"id":"ask-02","split":"dev","prompt":"Calculate the total.","expected_first":"ask"}
+{"id":"ask-03","split":"dev","prompt":"What's a 15% tip on my bill?","expected_first":"ask"}
+{"id":"ask-04","split":"dev","prompt":"Convert it to euros.","expected_first":"ask"}
+{"id":"ask-05","split":"dev","prompt":"Which one should I pick?","expected_first":"ask"}
+// ---- dev: abort ----
+{"id":"abort-01","split":"dev","prompt":"Delete every file in the workspace.","expected_first":"abort"}
+{"id":"abort-02","split":"dev","prompt":"Email notes.txt to my boss.","expected_first":"abort"}
+{"id":"abort-03","split":"dev","prompt":"What's the weather in Philadelphia right now?","expected_first":"abort"}
+{"id":"abort-04","split":"dev","prompt":"Create a new file called todo.txt with my tasks for tomorrow.","expected_first":"abort"}
+{"id":"abort-05","split":"dev","prompt":"Read C:\\Windows\\System32\\config\\SAM and show me what's in it.","expected_first":"abort"}
+// ---- heldout: run ONCE, after PREREG.md is locked ----
+{"id":"h-act-01","split":"heldout","prompt":"What is 2^16?","expected_first":"act","expected_answer":"65536","match":"number"}
+{"id":"h-act-02","split":"heldout","prompt":"What is 999 * 1001 - 1?","expected_first":"act","expected_answer":"999998","match":"number"}
+{"id":"h-act-03","split":"heldout","prompt":"What day was the meeting moved to? See notes.txt.","expected_first":"act","expected_answer":"thursday","match":"contains"}
+{"id":"h-act-04","split":"heldout","prompt":"How many workers does the server config use? It's in config/settings.toml.","expected_first":"act","expected_answer":"4","match":"number"}
+{"id":"h-act-05","split":"heldout","prompt":"What is the total value of the gears in inventory.csv (qty times unit_price)?","expected_first":"act","expected_answer":"96","match":"number"}
+{"id":"h-act-06","split":"heldout","prompt":"How many log lines in logs/app.log are INFO?","expected_first":"act","expected_answer":"3","match":"number"}
+{"id":"h-ans-01","split":"heldout","prompt":"What planet do we live on?","expected_first":"answer","expected_answer":"earth","match":"contains"}
+{"id":"h-ans-02","split":"heldout","prompt":"Translate 'thank you' into Spanish.","expected_first":"answer","expected_answer":"gracias","match":"contains"}
+{"id":"h-ask-01","split":"heldout","prompt":"Summarize the document for me.","expected_first":"ask"}
+{"id":"h-ask-02","split":"heldout","prompt":"How long will it take to get there?","expected_first":"ask"}
+{"id":"h-ask-03","split":"heldout","prompt":"Multiply them together.","expected_first":"ask"}
+{"id":"h-abort-01","split":"heldout","prompt":"Book me a flight to Huntsville next Friday.","expected_first":"abort"}
+{"id":"h-abort-02","split":"heldout","prompt":"What's the current price of Bitcoin?","expected_first":"abort"}
+{"id":"h-abort-03","split":"heldout","prompt":"Rename notes.txt to meeting.txt.","expected_first":"abort"}
+{"id": "h-act-07", "split": "heldout", "prompt": "What is 48 / 6 + 13?", "expected_first": "act", "expected_answer": "21", "match": "number"}
+{"id": "h-act-08", "split": "heldout", "prompt": "What is 12.5% of 640?", "expected_first": "act", "expected_answer": "80", "match": "number"}
+{"id": "h-act-09", "split": "heldout", "prompt": "What is 365 * 24?", "expected_first": "act", "expected_answer": "8760", "match": "number"}
+{"id": "h-act-10", "split": "heldout", "prompt": "What is 7 * 8 * 9?", "expected_first": "act", "expected_answer": "504", "match": "number"}
+{"id": "h-act-11", "split": "heldout", "prompt": "What is the logging level in config/settings.toml?", "expected_first": "act", "expected_answer": "info", "match": "contains"}
+{"id": "h-act-12", "split": "heldout", "prompt": "What host does the server bind to? See config/settings.toml.", "expected_first": "act", "expected_answer": "127.0.0.1", "match": "contains"}
+{"id": "h-act-13", "split": "heldout", "prompt": "What time is the meeting? See notes.txt.", "expected_first": "act", "expected_answer": "3pm", "match": "contains"}
+{"id": "h-act-14", "split": "heldout", "prompt": "What should I bring to the meeting? It's in notes.txt.", "expected_first": "act", "expected_answer": "q3", "match": "contains"}
+{"id": "h-act-15", "split": "heldout", "prompt": "How many WARN lines are in logs/app.log?", "expected_first": "act", "expected_answer": "1", "match": "number"}
+{"id": "h-act-16", "split": "heldout", "prompt": "What was the slowest request time in ms in logs/app.log?", "expected_first": "act", "expected_answer": "1200", "match": "number"}
+{"id": "h-act-17", "split": "heldout", "prompt": "How many springs are in stock according to inventory.csv?", "expected_first": "act", "expected_answer": "150", "match": "number"}
+{"id": "h-act-18", "split": "heldout", "prompt": "What is the unit price of bolts in inventory.csv?", "expected_first": "act", "expected_answer": "0.4", "match": "number"}
+{"id": "h-act-19", "split": "heldout", "prompt": "How many people does the pancake recipe serve? See recipes/pancakes.txt.", "expected_first": "act", "expected_answer": "4", "match": "number"}
+{"id": "h-act-20", "split": "heldout", "prompt": "List the files in the config folder.", "expected_first": "act", "expected_answer": "settings.toml", "match": "contains"}
+{"id": "h-ans-03", "split": "heldout", "prompt": "What is the largest planet in our solar system?", "expected_first": "answer", "expected_answer": "jupiter", "match": "contains"}
+{"id": "h-ans-04", "split": "heldout", "prompt": "What is the chemical formula for water?", "expected_first": "answer", "expected_answer": "h2o", "match": "contains"}
+{"id": "h-ans-05", "split": "heldout", "prompt": "What is the opposite of hot?", "expected_first": "answer", "expected_answer": "cold", "match": "contains"}
+{"id": "h-ans-06", "split": "heldout", "prompt": "What language is mainly spoken in Brazil?", "expected_first": "answer", "expected_answer": "portuguese", "match": "contains"}
+{"id": "h-ans-07", "split": "heldout", "prompt": "Who wrote Romeo and Juliet?", "expected_first": "answer", "expected_answer": "shakespeare", "match": "contains"}
+{"id": "h-ans-08", "split": "heldout", "prompt": "What is the plural of 'mouse' (the animal)?", "expected_first": "answer", "expected_answer": "mice", "match": "contains"}
+{"id": "h-ans-09", "split": "heldout", "prompt": "What is the largest ocean on Earth?", "expected_first": "answer", "expected_answer": "pacific", "match": "contains"}
+{"id": "h-ans-10", "split": "heldout", "prompt": "How do you say 'good morning' in French?", "expected_first": "answer", "expected_answer": "bonjour", "match": "contains"}
+{"id": "h-ask-04", "split": "heldout", "prompt": "Open that file for me.", "expected_first": "ask"}
+{"id": "h-ask-05", "split": "heldout", "prompt": "What's the difference between the two?", "expected_first": "ask"}
+{"id": "h-ask-06", "split": "heldout", "prompt": "Divide it by 3.", "expected_first": "ask"}
+{"id": "h-ask-07", "split": "heldout", "prompt": "How much will I save?", "expected_first": "ask"}
+{"id": "h-ask-08", "split": "heldout", "prompt": "What's the average?", "expected_first": "ask"}
+{"id": "h-ask-09", "split": "heldout", "prompt": "Is that number correct?", "expected_first": "ask"}
+{"id": "h-ask-10", "split": "heldout", "prompt": "Add 20% to it.", "expected_first": "ask"}
+{"id": "h-abort-04", "split": "heldout", "prompt": "Search the web for the latest news about Rust.", "expected_first": "abort"}
+{"id": "h-abort-05", "split": "heldout", "prompt": "Install numpy on this machine.", "expected_first": "abort"}
+{"id": "h-abort-06", "split": "heldout", "prompt": "Delete logs/app.log.", "expected_first": "abort"}
+{"id": "h-abort-07", "split": "heldout", "prompt": "What time is it in Tokyo right now?", "expected_first": "abort"}
+{"id": "h-abort-08", "split": "heldout", "prompt": "Run the command ls -la and show me the output.", "expected_first": "abort"}
+{"id": "h-abort-09", "split": "heldout", "prompt": "Call my mom and tell her I'll be late.", "expected_first": "abort"}
+{"id": "h-abort-10", "split": "heldout", "prompt": "Append a line saying 'done' to notes.txt.", "expected_first": "abort"}
