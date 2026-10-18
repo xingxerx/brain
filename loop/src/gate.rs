@@ -32,6 +32,7 @@ impl Gate for TextGate {
             entropy: None,
             source: "text".into(),
             overridden: false,
+            meta: None,
         })
     }
 }
@@ -40,11 +41,17 @@ impl Gate for TextGate {
 struct LensRequest<'a> {
     messages: &'a [ChatMessage],
     proposed: Decision,
+    /// Must match what the generator was sent, or the gate reads a different prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 struct LensResponse {
     probs: BTreeMap<Decision, f32>,
+    /// Everything else the sidecar sends (mode, anchor_mass, margin, timing). Kept for the log.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub struct LensGate {
@@ -52,6 +59,7 @@ pub struct LensGate {
     url: String,
     /// Normalized entropy above this means "not sure": the gate returns Ask.
     ask_threshold: f32,
+    thinking: Option<bool>,
 }
 
 impl LensGate {
@@ -63,7 +71,14 @@ impl LensGate {
             http,
             url: format!("{}/gate", sidecar_url.trim_end_matches('/')),
             ask_threshold,
+            thinking: None,
         })
+    }
+
+    /// Same setting as the generator's `--no-think`, so the gate renders the same prompt.
+    pub fn with_thinking(mut self, thinking: Option<bool>) -> Self {
+        self.thinking = thinking;
+        self
     }
 }
 
@@ -79,6 +94,9 @@ impl Gate for LensGate {
             .json(&LensRequest {
                 messages,
                 proposed: proposal.decision,
+                chat_template_kwargs: self
+                    .thinking
+                    .map(|t| serde_json::json!({ "enable_thinking": t })),
             })
             .send()
             .with_context(|| {
@@ -88,16 +106,18 @@ impl Gate for LensGate {
                 )
             })?;
         if !resp.status().is_success() {
-            return Err(anyhow!("lens sidecar returned {}", resp.status()));
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            return Err(anyhow!("lens sidecar returned {status}: {body}"));
         }
         let r: LensResponse = resp
             .json()
             .context("lens sidecar reply did not match the contract")?;
-        Ok(apply_entropy_rule(
-            r.probs,
-            proposal.decision,
-            self.ask_threshold,
-        ))
+        let mut out = apply_entropy_rule(r.probs, proposal.decision, self.ask_threshold);
+        if !r.extra.is_empty() {
+            out.meta = Some(serde_json::Value::Object(r.extra));
+        }
+        Ok(out)
     }
 }
 
@@ -132,6 +152,7 @@ pub fn apply_entropy_rule(
         entropy: Some(entropy),
         source: "lens".into(),
         overridden: decision != proposed,
+        meta: None,
     }
 }
 
@@ -153,6 +174,18 @@ mod tests {
         let g = apply_entropy_rule(dist(0.9, 0.05, 0.03, 0.02), Decision::Act, 0.7);
         assert_eq!(g.decision, Decision::Act);
         assert!(!g.overridden);
+    }
+
+    #[test]
+    fn sidecar_extras_are_kept() {
+        let r: LensResponse = serde_json::from_str(
+            r#"{"probs":{"act":0.9,"answer":0.1},"mode":"probe","margin":2.5,"anchor_mass":0.004}"#,
+        )
+        .unwrap();
+        assert_eq!(r.probs.len(), 2);
+        assert_eq!(r.extra["mode"], "probe");
+        assert_eq!(r.extra["anchor_mass"], 0.004);
+        assert!(!r.extra.contains_key("probs"));
     }
 
     #[test]

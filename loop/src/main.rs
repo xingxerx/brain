@@ -72,6 +72,11 @@ struct Cli {
     #[arg(long, global = true)]
     no_schema: bool,
 
+    /// Ask the chat template to skip the thinking block (about 2-3x fewer tokens per step on
+    /// Qwen3.5). This changes the experimental condition: don't mix runs with and without it.
+    #[arg(long, global = true)]
+    no_think: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -93,11 +98,22 @@ enum Cmd {
         /// A run folder, e.g. runs/1760000000000-eval-dev-text
         dir: PathBuf,
     },
+    /// Write the step-1 conversation for each task as JSONL, exactly as the loop would send it.
+    /// The probe script reads this, so the probe sees the same system prompt as the loop.
+    DumpPrompts {
+        #[arg(long, default_value = "eval/tasks_probe.jsonl")]
+        tasks: PathBuf,
+        /// dev, heldout, probe, or all.
+        #[arg(long, default_value = "probe")]
+        split: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Run the pre-registered task set.
     Eval {
         #[arg(long, default_value = "eval/tasks.jsonl")]
         tasks: PathBuf,
-        /// dev, heldout, or all. Heldout is meant to be run once, after PREREG is locked.
+        /// dev, heldout, probe, or all. Heldout is meant to be run once, after PREREG is locked.
         #[arg(long, default_value = "dev")]
         split: String,
         /// Only run the first N tasks (for smoke tests).
@@ -110,7 +126,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let lens: Option<LensGate> = if cli.gate == GateKind::Lens || cli.shadow_lens {
-        Some(LensGate::new(&cli.sidecar_url, cli.ask_threshold)?)
+        Some(
+            LensGate::new(&cli.sidecar_url, cli.ask_threshold)?
+                .with_thinking(cli.no_think.then_some(false)),
+        )
     } else {
         None
     };
@@ -127,6 +146,32 @@ fn main() -> Result<()> {
     match &cli.cmd {
         Cmd::Check => check(&cli),
         Cmd::Report { dir } => report::run(dir),
+        Cmd::DumpPrompts { tasks, split, out } => {
+            let chosen = eval::select_split(eval::load_tasks(tasks)?, split)?;
+            if chosen.is_empty() {
+                bail!("no tasks with split '{split}' in {}", tasks.display());
+            }
+            let mut text = String::new();
+            for t in &chosen {
+                let line = serde_json::json!({
+                    "id": t.id,
+                    "split": t.split,
+                    "expected_first": t.expected_first,
+                    "messages": [
+                        llm::ChatMessage::system(agent::system_prompt()),
+                        llm::ChatMessage::user(&t.prompt),
+                    ],
+                });
+                text.push_str(&serde_json::to_string(&line)?);
+                text.push('\n');
+            }
+            if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(out, text)?;
+            eprintln!("wrote {} prompts to {}", chosen.len(), out.display());
+            Ok(())
+        }
         Cmd::Ask { request } => {
             let llm = client(&cli)?;
             let tools = Tools::new(&cli.workspace)?;
@@ -161,22 +206,11 @@ fn main() -> Result<()> {
             split,
             limit,
         } => {
-            let all = eval::load_tasks(tasks)?;
-            let mut chosen: Vec<_> = match split.as_str() {
-                "dev" => all
-                    .into_iter()
-                    .filter(|t| t.split == eval::Split::Dev)
-                    .collect(),
-                "heldout" => all
-                    .into_iter()
-                    .filter(|t| t.split == eval::Split::Heldout)
-                    .collect(),
-                "all" => all,
-                other => bail!("unknown split '{other}' (use dev, heldout, or all)"),
-            };
+            let mut chosen = eval::select_split(eval::load_tasks(tasks)?, split)?;
             if let Some(n) = limit {
                 chosen.truncate(*n);
             }
+            preflight(&cli)?;
             let llm = client(&cli)?;
             let tools = Tools::new(&cli.workspace)?;
             let agent = Agent {
@@ -193,19 +227,42 @@ fn main() -> Result<()> {
             let s = eval::run_eval(&agent, &chosen, &mut log, &cli.model)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
             eprintln!("\nresults: {}", log.dir.display());
+            if let Some(why) = &s.aborted {
+                bail!("eval stopped early, not a result: {why}");
+            }
             Ok(())
         }
     }
 }
 
 fn client(cli: &Cli) -> Result<OpenAiCompatClient> {
-    OpenAiCompatClient::new(
+    Ok(OpenAiCompatClient::new(
         &cli.base_url,
         &cli.model,
         cli.temperature,
         cli.max_tokens,
         !cli.no_schema,
-    )
+    )?
+    .with_thinking(cli.no_think.then_some(false)))
+}
+
+/// Refuse to start an eval against a server that isn't there, so a dead server never
+/// produces a run full of fake FAILs.
+fn preflight(cli: &Cli) -> Result<()> {
+    let http = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let url = format!("{}/models", cli.base_url.trim_end_matches('/'));
+    if let Err(e) = http.get(&url).send().and_then(|r| r.error_for_status()) {
+        bail!("model server not reachable at {url} ({e}). Start it, then run `brain check`.");
+    }
+    if cli.gate == GateKind::Lens || cli.shadow_lens {
+        let health = format!("{}/health", cli.sidecar_url.trim_end_matches('/'));
+        if let Err(e) = http.get(&health).send().and_then(|r| r.error_for_status()) {
+            bail!("lens sidecar not reachable at {health} ({e}). Start sidecar/server.py first.");
+        }
+    }
+    Ok(())
 }
 
 fn check(cli: &Cli) -> Result<()> {
@@ -236,7 +293,11 @@ fn check(cli: &Cli) -> Result<()> {
     if cli.gate == GateKind::Lens || cli.shadow_lens {
         let health = format!("{}/health", cli.sidecar_url.trim_end_matches('/'));
         match http.get(&health).send().and_then(|r| r.error_for_status()) {
-            Ok(_) => println!("lens sidecar OK at {}", cli.sidecar_url),
+            Ok(r) => println!(
+                "lens sidecar OK at {}: {}",
+                cli.sidecar_url,
+                r.text().unwrap_or_default()
+            ),
             Err(e) => println!("lens sidecar NOT reachable at {health}: {e}"),
         }
     }

@@ -103,6 +103,10 @@ pub struct GateOutput {
     pub source: String,
     /// True when the gate overrode the model's proposed decision.
     pub overridden: bool,
+    /// Anything else the gate reported (lens: mode, anchor_mass, probe margin, timing).
+    /// Logged as-is so a run can be audited after the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 /// Normalized Shannon entropy of a distribution, in [0, 1].

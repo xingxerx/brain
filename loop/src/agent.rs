@@ -50,6 +50,8 @@ pub struct RunResult {
     pub parse_errors: usize,
     pub overrides: usize,
     pub total_latency_ms: u128,
+    /// Generated tokens across main calls, when the server reports usage (0 if it doesn't).
+    pub completion_tokens: u64,
 }
 
 pub struct Agent<'a> {
@@ -99,6 +101,7 @@ impl Agent<'_> {
             parse_errors: 0,
             overrides: 0,
             total_latency_ms: 0,
+            completion_tokens: 0,
         };
 
         for step in 1..=self.max_steps {
@@ -113,6 +116,7 @@ impl Agent<'_> {
             };
             let latency_ms = started.elapsed().as_millis();
             res.total_latency_ms += latency_ms;
+            res.completion_tokens += completion.completion_tokens.unwrap_or(0);
             let raw = completion.content.trim().to_string();
             let reasoning_chars = completion
                 .reasoning
@@ -138,6 +142,8 @@ impl Agent<'_> {
                         task_id,
                         step,
                         latency_ms,
+                        completion_tokens: completion.completion_tokens,
+                        prompt_tokens: completion.prompt_tokens,
                         reasoning_chars,
                         raw: &raw,
                         proposal: None,
@@ -145,6 +151,8 @@ impl Agent<'_> {
                         gate: None,
                         shadow: None,
                         shadow_error: None,
+                        refill_raw: None,
+                        refill_latency_ms: None,
                         observation: Some(&obs),
                         messages: &messages,
                     })?;
@@ -188,29 +196,65 @@ impl Agent<'_> {
                 ),
             );
 
-            // 3. Execute the gated decision.
+            // 3. The gate may pick a decision the model wrote no payload for (an answer with no
+            //    answer text, an act with no tool). Ask the model once to fill it in. That reply
+            //    is not gated again: the gate already made this step's decision.
+            let mut refill: Option<(String, Option<Proposal>)> = None;
+            let mut refill_latency_ms: Option<u128> = None;
+            if gate.overridden && needs_payload(&proposal, gate.decision) {
+                let t = Instant::now();
+                refill = self
+                    .refill(&messages, &raw, gate.decision)
+                    .map(|(r, p, tokens)| {
+                        res.completion_tokens += tokens;
+                        (r, p)
+                    });
+                let ms = t.elapsed().as_millis();
+                res.total_latency_ms += ms;
+                refill_latency_ms = Some(ms);
+                if let Some((_, filled)) = &refill {
+                    self.say(
+                        step,
+                        &format!(
+                            "refill for {}: {}",
+                            gate.decision,
+                            if filled.is_some() {
+                                "ok"
+                            } else {
+                                "no valid reply, falling back"
+                            }
+                        ),
+                    );
+                }
+            }
+            let acted: &Proposal = refill
+                .as_ref()
+                .and_then(|(_, p)| p.as_ref())
+                .unwrap_or(&proposal);
+
+            // 4. Execute the gated decision.
             let mut terminal: Option<Outcome> = None;
             let observation: String = match gate.decision {
-                Decision::Act if proposal.tool == ToolName::None => {
+                Decision::Act if acted.tool == ToolName::None => {
                     "Observation: the gate wants a tool step here. Pick a tool.".into()
                 }
                 Decision::Act => {
-                    let out = self.tools.run(proposal.tool, &proposal.input);
+                    let out = self.tools.run(acted.tool, &acted.input);
                     format!("Observation: {out}")
                 }
-                Decision::Answer if proposal.answer.trim().is_empty() => {
+                Decision::Answer if acted.answer.trim().is_empty() => {
                     "Observation: the gate wants your final answer now.".into()
                 }
                 Decision::Answer => {
-                    terminal = Some(Outcome::Answered(proposal.answer.trim().to_string()));
+                    terminal = Some(Outcome::Answered(acted.answer.trim().to_string()));
                     String::new()
                 }
                 Decision::Ask => {
-                    let q = if proposal.question.trim().is_empty() {
+                    let q = if acted.question.trim().is_empty() {
                         "I'm not confident how to proceed. Can you clarify what you want?"
                             .to_string()
                     } else {
-                        proposal.question.trim().to_string()
+                        acted.question.trim().to_string()
                     };
                     match self.ask_mode {
                         AskMode::Stop => {
@@ -221,7 +265,7 @@ impl Agent<'_> {
                     }
                 }
                 Decision::Abort => {
-                    terminal = Some(Outcome::Aborted(proposal.thought.trim().to_string()));
+                    terminal = Some(Outcome::Aborted(acted.thought.trim().to_string()));
                     String::new()
                 }
             };
@@ -232,6 +276,8 @@ impl Agent<'_> {
                 task_id,
                 step,
                 latency_ms,
+                completion_tokens: completion.completion_tokens,
+                prompt_tokens: completion.prompt_tokens,
                 reasoning_chars,
                 raw: &raw,
                 proposal: Some(&proposal),
@@ -239,6 +285,8 @@ impl Agent<'_> {
                 gate: Some(&gate),
                 shadow: shadow.as_ref(),
                 shadow_error: shadow_error.as_deref(),
+                refill_raw: refill.as_ref().map(|(r, _)| r.as_str()),
+                refill_latency_ms,
                 observation: (!observation.is_empty()).then_some(observation.as_str()),
                 messages: &messages,
             })?;
@@ -251,10 +299,35 @@ impl Agent<'_> {
                 eprintln!("        {}", observation.replace('\n', "\n        "));
             }
             messages.push(ChatMessage::assistant(raw));
+            if let Some((refill_raw, _)) = refill {
+                // Keep the exchange in history so every model-visible input stays replayable.
+                messages.push(ChatMessage::user(refill_prompt(gate.decision)));
+                messages.push(ChatMessage::assistant(refill_raw));
+            }
             messages.push(ChatMessage::user(observation));
         }
 
         Ok(res)
+    }
+
+    /// One extra model call asking for the payload of `decision`. Returns the raw reply and,
+    /// if it is a valid step with that decision, the parsed proposal.
+    fn refill(
+        &self,
+        messages: &[ChatMessage],
+        raw: &str,
+        decision: Decision,
+    ) -> Option<(String, Option<Proposal>, u64)> {
+        let mut m = messages.to_vec();
+        m.push(ChatMessage::assistant(raw));
+        m.push(ChatMessage::user(refill_prompt(decision)));
+        let c = self.llm.complete(&m).ok()?;
+        let tokens = c.completion_tokens.unwrap_or(0);
+        let reply = c.content.trim().to_string();
+        let parsed = extract_json_object(&reply)
+            .and_then(|j| serde_json::from_str::<Proposal>(j).ok())
+            .filter(|p| p.decision == decision && p.validate().is_ok());
+        Some((reply, parsed, tokens))
     }
 
     fn say(&self, step: usize, msg: &str) {
@@ -262,6 +335,30 @@ impl Agent<'_> {
             eprintln!("  [{step}] {msg}");
         }
     }
+}
+
+/// True when `p` has nothing usable for `decision` (the gate overrode the model).
+pub fn needs_payload(p: &Proposal, decision: Decision) -> bool {
+    match decision {
+        Decision::Act => p.tool == ToolName::None,
+        Decision::Answer => p.answer.trim().is_empty(),
+        Decision::Ask => p.question.trim().is_empty(),
+        // The model's thought argues for another decision, so it is not an abort reason.
+        Decision::Abort => p.decision != Decision::Abort,
+    }
+}
+
+pub fn refill_prompt(decision: Decision) -> String {
+    let need = match decision {
+        Decision::Act => "tool and input",
+        Decision::Answer => "answer",
+        Decision::Ask => "question",
+        Decision::Abort => "thought, saying why this cannot be done",
+    };
+    format!(
+        "Observation: the gate decided this step is \"{decision}\". Reply with one JSON object \
+         with decision \"{decision}\" and fill in {need}."
+    )
 }
 
 fn read_user_reply(question: &str) -> Result<String> {
@@ -290,14 +387,41 @@ mod tests {
             self.i.set(i + 1);
             Ok(Completion {
                 content: self.replies.get(i).copied().unwrap_or("{}").into(),
-                reasoning: None,
+                ..Default::default()
             })
         }
     }
 
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+    /// A gate that always decides `0`, whatever the model proposed.
+    struct ForceGate(Decision);
+
+    impl Gate for ForceGate {
+        fn name(&self) -> &'static str {
+            "force"
+        }
+        fn decide(&self, _m: &[ChatMessage], p: &Proposal) -> Result<crate::decision::GateOutput> {
+            Ok(crate::decision::GateOutput {
+                decision: self.0,
+                confidence: None,
+                probs: None,
+                entropy: None,
+                source: "force".into(),
+                overridden: self.0 != p.decision,
+                meta: None,
+            })
+        }
+    }
+
     fn harness(replies: Vec<&'static str>) -> (RunResult, std::path::PathBuf) {
+        harness_with(replies, &TextGate)
+    }
+
+    fn harness_with(
+        replies: Vec<&'static str>,
+        gate: &dyn Gate,
+    ) -> (RunResult, std::path::PathBuf) {
         let base = std::env::temp_dir().join(format!(
             "brain-agent-test-{}-{}",
             std::process::id(),
@@ -309,11 +433,10 @@ mod tests {
             replies,
             i: Cell::new(0),
         };
-        let gate = TextGate;
         let agent = Agent {
             llm: &llm,
             tools: &tools,
-            gate: &gate,
+            gate,
             shadow: None,
             max_steps: 5,
             ask_mode: AskMode::Stop,
@@ -355,6 +478,61 @@ mod tests {
         ]);
         assert_eq!(r.outcome, Outcome::Asked("Which file?".into()));
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn override_refills_missing_answer() {
+        // Model wants a tool; the gate says answer. The refill reply supplies the answer.
+        let (r, base) = harness_with(
+            vec![
+                r#"{"thought":"add","decision":"act","tool":"calculator","input":"2+3","answer":"","question":""}"#,
+                r#"{"thought":"ok","decision":"answer","tool":"none","input":"","answer":"5","question":""}"#,
+            ],
+            &ForceGate(Decision::Answer),
+        );
+        assert_eq!(r.outcome, Outcome::Answered("5".into()));
+        assert_eq!(r.steps, 1);
+        assert_eq!(r.overrides, 1);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn override_refill_for_ask_replaces_canned_question() {
+        let (r, base) = harness_with(
+            vec![
+                r#"{"thought":"read","decision":"act","tool":"read_file","input":"a.txt","answer":"","question":""}"#,
+                r#"{"thought":"?","decision":"ask","tool":"none","input":"","answer":"","question":"Which file?"}"#,
+            ],
+            &ForceGate(Decision::Ask),
+        );
+        assert_eq!(r.outcome, Outcome::Asked("Which file?".into()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn bad_refill_falls_back() {
+        // Refill reply has the wrong decision: keep the old behavior (canned question).
+        let (r, base) = harness_with(
+            vec![
+                r#"{"thought":"read","decision":"act","tool":"read_file","input":"a.txt","answer":"","question":""}"#,
+                r#"{"thought":"no","decision":"act","tool":"read_file","input":"a.txt","answer":"","question":""}"#,
+            ],
+            &ForceGate(Decision::Ask),
+        );
+        assert!(matches!(r.outcome, Outcome::Asked(q) if q.contains("not confident")));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn payload_rules() {
+        let act: Proposal = serde_json::from_str(
+            r#"{"thought":"t","decision":"act","tool":"calculator","input":"1+1"}"#,
+        )
+        .unwrap();
+        assert!(!needs_payload(&act, Decision::Act));
+        assert!(needs_payload(&act, Decision::Answer));
+        assert!(needs_payload(&act, Decision::Ask));
+        assert!(needs_payload(&act, Decision::Abort));
     }
 
     #[test]

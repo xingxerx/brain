@@ -14,7 +14,25 @@ use std::path::Path;
 pub enum Split {
     Dev,
     Heldout,
+    /// Probe-training tasks (eval/tasks_probe.jsonl). Never dev, never heldout.
+    Probe,
 }
+
+/// Keep the tasks of one split: dev, heldout, probe, or all.
+pub fn select_split(all: Vec<Task>, split: &str) -> Result<Vec<Task>> {
+    let want = match split {
+        "all" => return Ok(all),
+        "dev" => Split::Dev,
+        "heldout" => Split::Heldout,
+        "probe" => Split::Probe,
+        other => bail!("unknown split '{other}' (use dev, heldout, probe, or all)"),
+    };
+    Ok(all.into_iter().filter(|t| t.split == want).collect())
+}
+
+/// Consecutive infrastructure errors (server or sidecar unreachable) before the eval stops.
+/// Model mistakes never count: they show up as parse errors or wrong moves, not errors.
+pub const MAX_CONSECUTIVE_ERRORS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,6 +84,11 @@ pub struct Summary {
     pub run_id: String,
     pub gate: String,
     pub model: String,
+    /// Set when the eval stopped early. The numbers then cover only the tasks that ran,
+    /// and the run must not be read as a result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aborted: Option<String>,
+    pub tasks_planned: usize,
     pub tasks: usize,
     pub first_decision_accuracy: f64,
     pub success_rate: f64,
@@ -78,6 +101,8 @@ pub struct Summary {
     pub step_limits: usize,
     pub mean_steps: f64,
     pub mean_latency_ms: f64,
+    /// Generated tokens per second of model time (0 when the server reports no usage).
+    pub tokens_per_second: f64,
 }
 
 pub fn load_tasks(path: &Path) -> Result<Vec<Task>> {
@@ -172,12 +197,14 @@ pub fn summarize(run_id: &str, gate: &str, model: &str, scores: &[TaskScore]) ->
     };
     let mut per_class: BTreeMap<Decision, (usize, usize)> = BTreeMap::new();
     let (mut first_ok, mut success, mut steps, mut latency) = (0usize, 0usize, 0usize, 0u128);
+    let mut tokens = 0u64;
 
     for sc in scores {
         first_ok += sc.first_correct as usize;
         success += sc.success as usize;
         steps += sc.result.steps;
         latency += sc.result.total_latency_ms;
+        tokens += sc.result.completion_tokens;
         s.parse_errors += sc.result.parse_errors;
         s.gate_overrides += sc.result.overrides;
         match sc.result.outcome {
@@ -200,6 +227,9 @@ pub fn summarize(run_id: &str, gate: &str, model: &str, scores: &[TaskScore]) ->
     s.success_rate = success as f64 / n;
     s.mean_steps = steps as f64 / n;
     s.mean_latency_ms = latency as f64 / n;
+    if latency > 0 {
+        s.tokens_per_second = tokens as f64 / (latency as f64 / 1000.0);
+    }
     s.per_class_first_accuracy = per_class
         .into_iter()
         .map(|(d, (ok, tot))| (d.to_string(), ok as f64 / tot as f64))
@@ -209,6 +239,8 @@ pub fn summarize(run_id: &str, gate: &str, model: &str, scores: &[TaskScore]) ->
 
 pub fn run_eval(agent: &Agent, tasks: &[Task], log: &mut RunLog, model: &str) -> Result<Summary> {
     let mut scores = Vec::with_capacity(tasks.len());
+    let mut consecutive_errors = 0usize;
+    let mut aborted = None;
     for (i, task) in tasks.iter().enumerate() {
         eprintln!("[{}/{}] {} : {}", i + 1, tasks.len(), task.id, task.prompt);
         let result = agent.run(&task.id, &task.prompt, log)?;
@@ -220,10 +252,31 @@ pub fn run_eval(agent: &Agent, tasks: &[Task], log: &mut RunLog, model: &str) ->
             sc.expected_first,
             sc.result.outcome
         );
+        consecutive_errors = match &sc.result.outcome {
+            Outcome::Error(_) => consecutive_errors + 1,
+            _ => 0,
+        };
+        let last_error = match &sc.result.outcome {
+            Outcome::Error(e) => Some(e.clone()),
+            _ => None,
+        };
         scores.push(sc);
+        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+            let why = format!(
+                "stopped after {consecutive_errors} errors in a row at task {}/{}: {}",
+                i + 1,
+                tasks.len(),
+                last_error.unwrap_or_default()
+            );
+            eprintln!("EVAL STOPPED. {why}\nThis run is not a result. Fix the server and rerun.");
+            aborted = Some(why);
+            break;
+        }
     }
     log.write_json("scores.json", &scores)?;
-    let summary = summarize(&log.run_id, agent.gate.name(), model, &scores);
+    let mut summary = summarize(&log.run_id, agent.gate.name(), model, &scores);
+    summary.tasks_planned = tasks.len();
+    summary.aborted = aborted;
     log.write_json("summary.json", &summary)?;
     Ok(summary)
 }
@@ -258,6 +311,15 @@ mod tests {
         let t = task("Maple Street", Match::Contains);
         assert!(answer_matches(&t, "It's on maple street!"));
         assert!(!answer_matches(&t, "Oak Avenue"));
+    }
+
+    #[test]
+    fn probe_tasks_parse_and_select() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../eval/tasks_probe.jsonl");
+        let tasks = select_split(load_tasks(&p).unwrap(), "probe").unwrap();
+        assert!(tasks.len() >= 100);
+        assert!(tasks.iter().all(|t| t.split == Split::Probe));
+        assert!(select_split(vec![], "nope").is_err());
     }
 
     #[test]

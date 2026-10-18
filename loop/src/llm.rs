@@ -37,6 +37,9 @@ impl ChatMessage {
 pub struct Completion {
     pub content: String,
     pub reasoning: Option<String>,
+    /// Tokens the server says it generated (thinking included). Used for tokens/s.
+    pub completion_tokens: Option<u64>,
+    pub prompt_tokens: Option<u64>,
 }
 
 pub trait Llm {
@@ -51,6 +54,8 @@ pub struct OpenAiCompatClient {
     max_tokens: u32,
     /// Ask the server to constrain output to the step JSON schema.
     use_schema: bool,
+    /// None: server default. Some(false): ask the chat template to skip the thinking block.
+    thinking: Option<bool>,
 }
 
 impl OpenAiCompatClient {
@@ -71,7 +76,15 @@ impl OpenAiCompatClient {
             temperature,
             max_tokens,
             use_schema,
+            thinking: None,
         })
+    }
+
+    /// `Some(false)` sends `chat_template_kwargs.enable_thinking = false`, which Qwen3.5's
+    /// template, the lens sidecar, llama.cpp's server and LM Studio all understand.
+    pub fn with_thinking(mut self, thinking: Option<bool>) -> Self {
+        self.thinking = thinking;
+        self
     }
 
     fn body(&self, messages: &[ChatMessage], with_schema: bool) -> Value {
@@ -87,6 +100,9 @@ impl OpenAiCompatClient {
                 "type": "json_schema",
                 "json_schema": { "name": "step", "strict": true, "schema": step_schema() }
             });
+        }
+        if let Some(t) = self.thinking {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": t });
         }
         body
     }
@@ -116,7 +132,12 @@ impl Llm for OpenAiCompatClient {
             .or_else(|| msg["reasoning"].as_str())
             .map(str::to_string)
             .filter(|s| !s.is_empty());
-        Ok(Completion { content, reasoning })
+        Ok(Completion {
+            content,
+            reasoning,
+            completion_tokens: v["usage"]["completion_tokens"].as_u64(),
+            prompt_tokens: v["usage"]["prompt_tokens"].as_u64(),
+        })
     }
 }
 
@@ -180,6 +201,18 @@ mod tests {
         assert_eq!(
             extract_json_object(t),
             Some("{\"a\": \"}{\", \"b\": {\"c\": 1}}")
+        );
+    }
+
+    #[test]
+    fn thinking_flag_goes_in_template_kwargs() {
+        let c = OpenAiCompatClient::new("http://x/v1", "m", 0.0, 10, false).unwrap();
+        let msgs = [ChatMessage::user("hi")];
+        assert!(c.body(&msgs, false).get("chat_template_kwargs").is_none());
+        let c = c.with_thinking(Some(false));
+        assert_eq!(
+            c.body(&msgs, false)["chat_template_kwargs"]["enable_thinking"],
+            false
         );
     }
 

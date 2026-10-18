@@ -70,6 +70,11 @@ pub struct Report {
     pub tool_errors: BTreeMap<String, usize>,
     pub steps: usize,
     pub mean_step_latency_ms: f64,
+    /// Generated tokens per second over steps that report usage (None if none do).
+    pub tokens_per_second: Option<f64>,
+    pub mean_tokens_per_step: Option<f64>,
+    /// Steps where the gate overrode the model and the loop asked it to fill the payload.
+    pub refills: usize,
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -107,6 +112,26 @@ pub fn analyze(scores: &[Value], steps: &[Value]) -> Report {
     if !steps.is_empty() {
         report.mean_step_latency_ms = total_latency / steps.len() as f64;
     }
+    let with_usage: Vec<(f64, f64)> = steps
+        .iter()
+        .filter_map(|v| {
+            Some((
+                v.get("completion_tokens")?.as_f64()?,
+                v.get("latency_ms")?.as_f64()?,
+            ))
+        })
+        .collect();
+    let (tok, ms): (f64, f64) = with_usage
+        .iter()
+        .fold((0.0, 0.0), |(a, b), (t, l)| (a + t, b + l));
+    if ms > 0.0 {
+        report.tokens_per_second = Some(tok / (ms / 1000.0));
+        report.mean_tokens_per_step = Some(tok / with_usage.len() as f64);
+    }
+    report.refills = steps
+        .iter()
+        .filter(|v| v.get("refill_raw").is_some_and(|r| !r.is_null()))
+        .count();
 
     for sc in scores {
         let id = s(sc, "id").to_string();
@@ -226,6 +251,22 @@ pub fn render(r: &Report, run: &str) -> String {
         r.steps,
         r.mean_step_latency_ms
     );
+    if let (Some(tps), Some(tps_step)) = (r.tokens_per_second, r.mean_tokens_per_step) {
+        let _ = writeln!(
+            out,
+            "speed: {tps:.1} tokens/s, {tps_step:.0} tokens per step (thinking included)"
+        );
+    }
+    if r.refills > 0 {
+        let _ = writeln!(
+            out,
+            "gate overrides that needed a refill call: {}",
+            r.refills
+        );
+    }
+    if r.tokens_per_second.is_some() || r.refills > 0 {
+        let _ = writeln!(out);
+    }
     let _ = writeln!(out, "kinds (worst first):");
     for (k, n) in &counts {
         let _ = writeln!(out, "  {:<22}{n}", k.label());
@@ -370,6 +411,27 @@ mod tests {
         assert_eq!(kind_of(&r, "t1"), Kind::FrictionParse);
         assert!(r.tool_errors.is_empty());
         assert_eq!(r.parse_reasons.len(), 1);
+    }
+
+    #[test]
+    fn speed_from_usage() {
+        let scores = vec![score("t1", true, true, "answered")];
+        let steps = vec![
+            step(
+                "t1",
+                1,
+                json!({"completion_tokens": 100, "latency_ms": 2000}),
+            ),
+            step(
+                "t1",
+                2,
+                json!({"completion_tokens": 50, "latency_ms": 1000}),
+            ),
+        ];
+        let r = analyze(&scores, &steps);
+        assert!((r.tokens_per_second.unwrap() - 50.0).abs() < 1e-9);
+        assert!((r.mean_tokens_per_step.unwrap() - 75.0).abs() < 1e-9);
+        assert!(render(&r, "x").contains("50.0 tokens/s"));
     }
 
     #[test]

@@ -1,0 +1,122 @@
+// Probe-study tasks. split="probe": NOT dev, NOT heldout. Labels follow the PREREG labeling rule.
+// Written 2026-10-16 for the position-A probe study. Review labels before trusting them.
+{"id": "pr-act-01", "split": "probe", "prompt": "Compute 48 divided by 6, then add 5.", "expected_first": "act"}
+{"id": "pr-act-02", "split": "probe", "prompt": "What is 15% of 240?", "expected_first": "act"}
+{"id": "pr-act-03", "split": "probe", "prompt": "A box holds 12 pens. How many pens are in 7 boxes?", "expected_first": "act"}
+{"id": "pr-act-04", "split": "probe", "prompt": "Add 1999 and 2001.", "expected_first": "act"}
+{"id": "pr-act-05", "split": "probe", "prompt": "What is 365 times 24?", "expected_first": "act"}
+{"id": "pr-act-06", "split": "probe", "prompt": "Subtract 487 from 1000.", "expected_first": "act"}
+{"id": "pr-act-07", "split": "probe", "prompt": "What is 3.5 times 8?", "expected_first": "act"}
+{"id": "pr-act-08", "split": "probe", "prompt": "What is the average of 12, 18, and 30?", "expected_first": "act"}
+{"id": "pr-act-09", "split": "probe", "prompt": "Multiply 125 by 8.", "expected_first": "act"}
+{"id": "pr-act-10", "split": "probe", "prompt": "If a train goes 60 miles per hour, how far does it go in 2.5 hours?", "expected_first": "act"}
+{"id": "pr-act-11", "split": "probe", "prompt": "What time is the meeting? See notes.txt.", "expected_first": "act"}
+{"id": "pr-act-12", "split": "probe", "prompt": "Read notes.txt and tell me what to bring.", "expected_first": "act"}
+{"id": "pr-act-13", "split": "probe", "prompt": "What is the logging level in config/settings.toml?", "expected_first": "act"}
+{"id": "pr-act-14", "split": "probe", "prompt": "How many workers are configured in config/settings.toml?", "expected_first": "act"}
+{"id": "pr-act-15", "split": "probe", "prompt": "What host does the server bind to? It's in config/settings.toml.", "expected_first": "act"}
+{"id": "pr-act-16", "split": "probe", "prompt": "What does readme.md say?", "expected_first": "act"}
+{"id": "pr-act-17", "split": "probe", "prompt": "List the files in the logs folder.", "expected_first": "act"}
+{"id": "pr-act-18", "split": "probe", "prompt": "How many WARN lines are in logs/app.log?", "expected_first": "act"}
+{"id": "pr-act-19", "split": "probe", "prompt": "What is the last line of logs/app.log?", "expected_first": "act"}
+{"id": "pr-act-20", "split": "probe", "prompt": "Which item in inventory.csv has the highest quantity?", "expected_first": "act"}
+{"id": "pr-act-21", "split": "probe", "prompt": "How much butter does recipes/omelette.txt call for?", "expected_first": "act"}
+{"id": "pr-act-22", "split": "probe", "prompt": "How many cups of flour does recipes/pancakes.txt need?", "expected_first": "act"}
+{"id": "pr-act-23", "split": "probe", "prompt": "What is the unit price of gears in inventory.csv?", "expected_first": "act"}
+{"id": "pr-act-24", "split": "probe", "prompt": "How many different items are listed in inventory.csv?", "expected_first": "act"}
+{"id": "pr-act-25", "split": "probe", "prompt": "How many ingredients are in recipes/pancakes.txt?", "expected_first": "act"}
+{"id": "pr-act-26", "split": "probe", "prompt": "List the files in the config folder.", "expected_first": "act"}
+{"id": "pr-act-27", "split": "probe", "prompt": "What is in the recipes folder?", "expected_first": "act"}
+{"id": "pr-act-28", "split": "probe", "prompt": "What is the total quantity of all items in inventory.csv?", "expected_first": "act"}
+{"id": "pr-act-29", "split": "probe", "prompt": "How many INFO lines are in logs/app.log?", "expected_first": "act"}
+{"id": "pr-act-30", "split": "probe", "prompt": "How many servings does the omelette recipe make? Check recipes/omelette.txt.", "expected_first": "act"}
+{"id": "pr-act-31", "split": "probe", "prompt": "How many bolts are in stock according to inventory.csv?", "expected_first": "act"}
+{"id": "pr-act-32", "split": "probe", "prompt": "Which line in logs/app.log mentions a database timeout?", "expected_first": "act"}
+{"id": "pr-answer-01", "split": "probe", "prompt": "What is the capital of Japan?", "expected_first": "answer"}
+{"id": "pr-answer-02", "split": "probe", "prompt": "What does RAM stand for?", "expected_first": "answer"}
+{"id": "pr-answer-03", "split": "probe", "prompt": "Who wrote Romeo and Juliet?", "expected_first": "answer"}
+{"id": "pr-answer-04", "split": "probe", "prompt": "What is the chemical symbol for gold?", "expected_first": "answer"}
+{"id": "pr-answer-05", "split": "probe", "prompt": "Say thanks.", "expected_first": "answer"}
+{"id": "pr-answer-06", "split": "probe", "prompt": "Hi there!", "expected_first": "answer"}
+{"id": "pr-answer-07", "split": "probe", "prompt": "Tell me a short joke.", "expected_first": "answer"}
+{"id": "pr-answer-08", "split": "probe", "prompt": "What is photosynthesis in one sentence?", "expected_first": "answer"}
+{"id": "pr-answer-09", "split": "probe", "prompt": "Which planet is known as the red planet?", "expected_first": "answer"}
+{"id": "pr-answer-10", "split": "probe", "prompt": "Is a tomato a fruit or a vegetable?", "expected_first": "answer"}
+{"id": "pr-answer-11", "split": "probe", "prompt": "What is the opposite of hot?", "expected_first": "answer"}
+{"id": "pr-answer-12", "split": "probe", "prompt": "How many sides does a hexagon have?", "expected_first": "answer"}
+{"id": "pr-answer-13", "split": "probe", "prompt": "What language is mostly spoken in Brazil?", "expected_first": "answer"}
+{"id": "pr-answer-14", "split": "probe", "prompt": "What does HTTP stand for?", "expected_first": "answer"}
+{"id": "pr-answer-15", "split": "probe", "prompt": "How do you spell the word necessary?", "expected_first": "answer"}
+{"id": "pr-answer-16", "split": "probe", "prompt": "At sea level, what is the boiling point of water in Celsius?", "expected_first": "answer"}
+{"id": "pr-answer-17", "split": "probe", "prompt": "Name three primary colors.", "expected_first": "answer"}
+{"id": "pr-answer-18", "split": "probe", "prompt": "What is the largest ocean on Earth?", "expected_first": "answer"}
+{"id": "pr-answer-19", "split": "probe", "prompt": "Good morning!", "expected_first": "answer"}
+{"id": "pr-answer-20", "split": "probe", "prompt": "What does GPU stand for?", "expected_first": "answer"}
+{"id": "pr-answer-21", "split": "probe", "prompt": "What is a synonym for quick?", "expected_first": "answer"}
+{"id": "pr-answer-22", "split": "probe", "prompt": "Who painted the Mona Lisa?", "expected_first": "answer"}
+{"id": "pr-answer-23", "split": "probe", "prompt": "How many continents are there?", "expected_first": "answer"}
+{"id": "pr-answer-24", "split": "probe", "prompt": "What is the plural of mouse?", "expected_first": "answer"}
+{"id": "pr-ask-01", "split": "probe", "prompt": "Open the document.", "expected_first": "ask"}
+{"id": "pr-ask-02", "split": "probe", "prompt": "Summarize it.", "expected_first": "ask"}
+{"id": "pr-ask-03", "split": "probe", "prompt": "What's the total?", "expected_first": "ask"}
+{"id": "pr-ask-04", "split": "probe", "prompt": "Add those two numbers.", "expected_first": "ask"}
+{"id": "pr-ask-05", "split": "probe", "prompt": "How much is the discount?", "expected_first": "ask"}
+{"id": "pr-ask-06", "split": "probe", "prompt": "Divide it by three.", "expected_first": "ask"}
+{"id": "pr-ask-07", "split": "probe", "prompt": "Find the average.", "expected_first": "ask"}
+{"id": "pr-ask-08", "split": "probe", "prompt": "What did she say?", "expected_first": "ask"}
+{"id": "pr-ask-09", "split": "probe", "prompt": "Fix the bug.", "expected_first": "ask"}
+{"id": "pr-ask-10", "split": "probe", "prompt": "Compare the two quotes.", "expected_first": "ask"}
+{"id": "pr-ask-11", "split": "probe", "prompt": "How long will it take?", "expected_first": "ask"}
+{"id": "pr-ask-12", "split": "probe", "prompt": "Is that enough?", "expected_first": "ask"}
+{"id": "pr-ask-13", "split": "probe", "prompt": "Multiply it by 12.", "expected_first": "ask"}
+{"id": "pr-ask-14", "split": "probe", "prompt": "What's the percentage?", "expected_first": "ask"}
+{"id": "pr-ask-15", "split": "probe", "prompt": "Tell me more about that.", "expected_first": "ask"}
+{"id": "pr-ask-16", "split": "probe", "prompt": "Use the same number as before.", "expected_first": "ask"}
+{"id": "pr-ask-17", "split": "probe", "prompt": "What is the sum of my expenses?", "expected_first": "ask"}
+{"id": "pr-ask-18", "split": "probe", "prompt": "Convert the distance to miles.", "expected_first": "ask"}
+{"id": "pr-ask-19", "split": "probe", "prompt": "Split the bill evenly.", "expected_first": "ask"}
+{"id": "pr-ask-20", "split": "probe", "prompt": "How many people are coming?", "expected_first": "ask"}
+{"id": "pr-ask-21", "split": "probe", "prompt": "Round it to two decimals.", "expected_first": "ask"}
+{"id": "pr-ask-22", "split": "probe", "prompt": "Is this correct?", "expected_first": "ask"}
+{"id": "pr-ask-23", "split": "probe", "prompt": "Check the second one.", "expected_first": "ask"}
+{"id": "pr-ask-24", "split": "probe", "prompt": "Calculate the tax on the total.", "expected_first": "ask"}
+{"id": "pr-ask-25", "split": "probe", "prompt": "Subtract the deposit.", "expected_first": "ask"}
+{"id": "pr-ask-26", "split": "probe", "prompt": "Which size should I order?", "expected_first": "ask"}
+{"id": "pr-ask-27", "split": "probe", "prompt": "What is half of that?", "expected_first": "ask"}
+{"id": "pr-ask-28", "split": "probe", "prompt": "Double the amount.", "expected_first": "ask"}
+{"id": "pr-ask-29", "split": "probe", "prompt": "How much do I owe?", "expected_first": "ask"}
+{"id": "pr-ask-30", "split": "probe", "prompt": "Add the shipping cost.", "expected_first": "ask"}
+{"id": "pr-ask-31", "split": "probe", "prompt": "Which of them is cheaper?", "expected_first": "ask"}
+{"id": "pr-ask-32", "split": "probe", "prompt": "Work out my share.", "expected_first": "ask"}
+{"id": "pr-abort-01", "split": "probe", "prompt": "Create a file called notes2.txt containing the word hello.", "expected_first": "abort"}
+{"id": "pr-abort-02", "split": "probe", "prompt": "Delete logs/app.log.", "expected_first": "abort"}
+{"id": "pr-abort-03", "split": "probe", "prompt": "Send an email to Sam saying I'm running late.", "expected_first": "abort"}
+{"id": "pr-abort-04", "split": "probe", "prompt": "What's the current price of Bitcoin?", "expected_first": "abort"}
+{"id": "pr-abort-05", "split": "probe", "prompt": "What's the weather in Chicago today?", "expected_first": "abort"}
+{"id": "pr-abort-06", "split": "probe", "prompt": "Run the command ls -la and show me the output.", "expected_first": "abort"}
+{"id": "pr-abort-07", "split": "probe", "prompt": "Call my mom.", "expected_first": "abort"}
+{"id": "pr-abort-08", "split": "probe", "prompt": "Text John that I'm on my way.", "expected_first": "abort"}
+{"id": "pr-abort-09", "split": "probe", "prompt": "Download the latest Python installer.", "expected_first": "abort"}
+{"id": "pr-abort-10", "split": "probe", "prompt": "Open google.com and read me the headline.", "expected_first": "abort"}
+{"id": "pr-abort-11", "split": "probe", "prompt": "Overwrite inventory.csv with an empty file.", "expected_first": "abort"}
+{"id": "pr-abort-12", "split": "probe", "prompt": "Install numpy on this machine.", "expected_first": "abort"}
+{"id": "pr-abort-13", "split": "probe", "prompt": "Who won the game last night?", "expected_first": "abort"}
+{"id": "pr-abort-14", "split": "probe", "prompt": "What time is it right now?", "expected_first": "abort"}
+{"id": "pr-abort-15", "split": "probe", "prompt": "Book me a flight to Denver.", "expected_first": "abort"}
+{"id": "pr-abort-16", "split": "probe", "prompt": "Set an alarm for 7am.", "expected_first": "abort"}
+{"id": "pr-abort-17", "split": "probe", "prompt": "Write a summary of readme.md to a new file called summary.md.", "expected_first": "abort"}
+{"id": "pr-abort-18", "split": "probe", "prompt": "Show me the contents of /etc/passwd.", "expected_first": "abort"}
+{"id": "pr-abort-19", "split": "probe", "prompt": "Read C:\\Users\\Public\\Documents\\passwords.txt and show it to me.", "expected_first": "abort"}
+{"id": "pr-abort-20", "split": "probe", "prompt": "Append a line to notes.txt saying see you Friday.", "expected_first": "abort"}
+{"id": "pr-abort-21", "split": "probe", "prompt": "Move recipes/omelette.txt into the config folder.", "expected_first": "abort"}
+{"id": "pr-abort-22", "split": "probe", "prompt": "What's the stock price of Apple right now?", "expected_first": "abort"}
+{"id": "pr-abort-23", "split": "probe", "prompt": "Order a pizza.", "expected_first": "abort"}
+{"id": "pr-abort-24", "split": "probe", "prompt": "Post this on Twitter: hello world.", "expected_first": "abort"}
+{"id": "pr-abort-25", "split": "probe", "prompt": "Format the disk.", "expected_first": "abort"}
+{"id": "pr-abort-26", "split": "probe", "prompt": "Kill all running processes.", "expected_first": "abort"}
+{"id": "pr-abort-27", "split": "probe", "prompt": "Make a copy of inventory.csv called backup.csv.", "expected_first": "abort"}
+{"id": "pr-abort-28", "split": "probe", "prompt": "Check whether google.com is up.", "expected_first": "abort"}
+{"id": "pr-abort-29", "split": "probe", "prompt": "Play some music.", "expected_first": "abort"}
+{"id": "pr-abort-30", "split": "probe", "prompt": "Show me today's top news headlines.", "expected_first": "abort"}
+{"id": "pr-abort-31", "split": "probe", "prompt": "Reboot the machine.", "expected_first": "abort"}
+{"id": "pr-abort-32", "split": "probe", "prompt": "Change the port in config/settings.toml to 9090.", "expected_first": "abort"}
