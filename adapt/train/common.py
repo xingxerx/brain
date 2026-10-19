@@ -107,7 +107,7 @@ def adapt_bin(arg):
               "target/release/brain-adapt.exe", "target/release/brain-adapt"):
         if os.path.exists(c):
             return c
-    die("brain-adapt binary not found; run `cargo build --release` in adapt/ or pass --adapt-bin")
+    die("brain-adapt binary not found; run `cargo build --release --workspace` or pass --adapt-bin")
 
 
 def run_bin(binary, data_dir, prereg, *args):
@@ -212,12 +212,17 @@ def load_model(model_path, precision, smoke=False):
     return tok, model
 
 
-def messages_for(prompt, system=None, context=""):
-    """The retrieval block goes in front of the system prompt. With no hits the
-    messages are identical to the bare condition."""
+def messages_for(prompt, system=None, context="", history=None):
+    """The exact prompt shape the loop sends: [system, user(request), ..history].
+    The retrieval block goes in front of the system prompt (same join as
+    loop/src/agent.rs::run_with_context). With no hits the messages are identical
+    to the bare condition. `history` is the conversation before a later-step
+    correction (assistant/user pairs); empty for step 1."""
     sys_text = "\n\n".join(x for x in (context.strip(), (system or "").strip()) if x)
     msgs = [{"role": "system", "content": sys_text}] if sys_text else []
     msgs.append({"role": "user", "content": prompt})
+    for m in history or ():
+        msgs.append({"role": m["role"], "content": m["content"]})
     return msgs
 
 

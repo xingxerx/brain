@@ -1,0 +1,3 @@
+[alias]
+# cargo adapt stats   ==   run the brain-adapt CLI
+adapt = "run --release -q -p brain-adapt --"

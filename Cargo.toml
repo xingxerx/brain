@@ -1,3 +1,6 @@
 [workspace]
 members = ["loop", "adapt"]
+# `cargo run` / `cargo build` / `cargo test` with no -p act on the loop, so
+# `cargo run --release -- ask ...` keeps working. Use --workspace for everything.
+default-members = ["loop"]
 resolver = "2"

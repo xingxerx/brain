@@ -5,6 +5,7 @@
 //!   cargo run --release -- eval --split dev
 
 mod agent;
+mod budget;
 mod decision;
 mod eval;
 mod gate;
@@ -77,6 +78,12 @@ struct Cli {
     #[arg(long, global = true)]
     no_think: bool,
 
+    /// After this many searches in a row (list_dir/read_file) find nothing related to the
+    /// request, the next search is overridden to an answer. Off by default. It changes behavior,
+    /// so never use it for the lens experiment; eval runs with it are labeled -budgetN.
+    #[arg(long, global = true)]
+    search_budget: Option<usize>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -100,6 +107,13 @@ enum Cmd {
         #[arg(long)]
         adapt: bool,
     },
+    /// Replay a run log and show where --search-budget would have stopped a search.
+    BudgetReplay {
+        /// A run folder.
+        dir: PathBuf,
+        #[arg(long, default_value_t = 2)]
+        budget: usize,
+    },
     /// Record a correction for a finished `ask` (or eval) run's first step, into adapt/data.
     /// Takes the exact system prompt, request and model reply from the run log.
     Correct {
@@ -108,6 +122,10 @@ enum Cmd {
         /// Which task in the run (eval runs hold many; ask runs hold one).
         #[arg(long)]
         task: Option<String>,
+        /// Which step was wrong (default 1). For a later step, the correction keeps the whole
+        /// conversation up to that step, so the lesson is "after seeing this, do that".
+        #[arg(long, default_value_t = 1)]
+        step: u64,
         /// What the model should have replied (one JSON proposal for decision fixes).
         #[arg(long, conflicts_with = "correction_file")]
         correction: Option<String>,
@@ -174,6 +192,17 @@ fn main() -> Result<()> {
         GateKind::Text => &text,
         GateKind::Lens => lens.as_ref().expect("lens gate constructed"),
     };
+    let budgeted = cli.search_budget.map(|b| budget::BudgetGate {
+        inner: gate,
+        budget: b,
+    });
+    if cli.search_budget == Some(0) {
+        bail!("--search-budget must be at least 1");
+    }
+    let gate: &dyn Gate = match &budgeted {
+        Some(b) => b,
+        None => gate,
+    };
     let shadow: Option<&dyn Gate> = match (cli.shadow_lens, cli.gate) {
         (true, GateKind::Text) => lens.as_ref().map(|l| l as &dyn Gate),
         _ => None,
@@ -182,6 +211,7 @@ fn main() -> Result<()> {
     match &cli.cmd {
         Cmd::Check => check(&cli),
         Cmd::Report { dir } => report::run(dir),
+        Cmd::BudgetReplay { dir, budget } => budget_replay(dir, *budget),
         Cmd::DumpPrompts { tasks, split, out } => {
             let chosen = eval::select_split(eval::load_tasks(tasks)?, split)?;
             if chosen.is_empty() {
@@ -211,6 +241,7 @@ fn main() -> Result<()> {
         Cmd::Correct {
             run,
             task,
+            step,
             correction,
             correction_file,
             kind,
@@ -223,6 +254,7 @@ fn main() -> Result<()> {
         } => correct(
             run,
             task.as_deref(),
+            *step,
             correction.clone(),
             correction_file.clone(),
             kind,
@@ -245,8 +277,16 @@ fn main() -> Result<()> {
                 ask_mode: AskMode::Interactive,
                 verbose: true,
             };
-            let mut log =
-                log::RunLog::create(&cli.runs_dir, if *adapt { "ask-adapt" } else { "ask" })?;
+            let mut log = log::RunLog::create(
+                &cli.runs_dir,
+                &format!(
+                    "ask{}{}",
+                    if *adapt { "-adapt" } else { "" },
+                    cli.search_budget
+                        .map(|b| format!("-budget{b}"))
+                        .unwrap_or_default()
+                ),
+            )?;
             let context = if *adapt {
                 let (k, min_coverage) = adapt_retrieval_settings();
                 let inf = ::adapt::for_request(
@@ -313,8 +353,16 @@ fn main() -> Result<()> {
                 ask_mode: AskMode::Stop,
                 verbose: true,
             };
-            let mut log =
-                log::RunLog::create(&cli.runs_dir, &format!("eval-{split}-{}", gate.name()))?;
+            let mut log = log::RunLog::create(
+                &cli.runs_dir,
+                &format!(
+                    "eval-{split}-{}{}",
+                    gate.name(),
+                    cli.search_budget
+                        .map(|b| format!("-budget{b}"))
+                        .unwrap_or_default()
+                ),
+            )?;
             let s = eval::run_eval(&agent, &chosen, &mut log, &cli.model)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
             eprintln!("\nresults: {}", log.dir.display());
@@ -324,6 +372,48 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// For each step of a finished run where the model proposed a search, the fruitless streak
+/// it was proposed at, and whether a budget of `budget` would have overridden it.
+fn budget_replay(dir: &std::path::Path, budget: usize) -> Result<()> {
+    let path = dir.join("steps.jsonl");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let (mut searches, mut fired, mut tasks_hit) = (0, 0, std::collections::BTreeSet::new());
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)?;
+        let Some(p) = v.get("proposal").filter(|p| !p.is_null()) else {
+            continue;
+        };
+        let p: decision::Proposal = serde_json::from_value(p.clone())?;
+        if p.decision != decision::Decision::Act
+            || !matches!(
+                p.tool,
+                decision::ToolName::ListDir | decision::ToolName::ReadFile
+            )
+        {
+            continue;
+        }
+        let msgs: Vec<llm::ChatMessage> = serde_json::from_value(v["messages"].clone())?;
+        let streak = budget::fruitless_streak(&msgs);
+        searches += 1;
+        let task = v["task_id"].as_str().unwrap_or("?").to_string();
+        if streak >= budget {
+            fired += 1;
+            println!(
+                "FIRE  {task:16} step {:>2}  streak {streak}  {:?} {}",
+                v["step"], p.tool, p.input
+            );
+            tasks_hit.insert(task);
+        }
+    }
+    println!(
+        "\n{searches} search steps, budget {budget} would override {fired} of them, in {} task(s): {}",
+        tasks_hit.len(),
+        tasks_hit.into_iter().collect::<Vec<_>>().join(", ")
+    );
+    Ok(())
 }
 
 /// k and min_coverage from adapt/prereg.json, so the loop retrieves exactly like eval does.
@@ -346,6 +436,7 @@ fn adapt_retrieval_settings() -> (usize, f64) {
 fn correct(
     run: &std::path::Path,
     task: Option<&str>,
+    step: u64,
     correction: Option<String>,
     correction_file: Option<PathBuf>,
     kind: &str,
@@ -360,35 +451,40 @@ fn correct(
     let path = run.join("steps.jsonl");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
-    let step1: Vec<serde_json::Value> = text
+    let at_step: Vec<serde_json::Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str(l).ok())
-        .filter(|v: &serde_json::Value| v["step"].as_u64() == Some(1))
+        .filter(|v: &serde_json::Value| v["step"].as_u64() == Some(step))
         .filter(|v| task.is_none_or(|t| v["task_id"].as_str() == Some(t)))
         .collect();
-    let rec = match step1.as_slice() {
+    let rec = match at_step.as_slice() {
         [one] => one,
         [] => bail!(
-            "no step-1 record{} in {}",
+            "no step-{step} record{} in {}",
             task.map(|t| format!(" for task {t}")).unwrap_or_default(),
             path.display()
         ),
         _ => bail!(
-            "{} step-1 records in this run; pick one with --task",
-            step1.len()
+            "{} step-{step} records in this run; pick one with --task",
+            at_step.len()
         ),
     };
+    // messages = [system, user(request), ..history]: exactly what the model saw at this step.
     let msgs = rec["messages"].as_array().cloned().unwrap_or_default();
-    let get = |role: &str| {
-        msgs.iter()
-            .find(|m| m["role"].as_str() == Some(role))
-            .and_then(|m| m["content"].as_str())
-            .map(String::from)
-    };
-    let mut system =
-        get("system").ok_or_else(|| anyhow::anyhow!("step 1 has no system message"))?;
-    let prompt = get("user").ok_or_else(|| anyhow::anyhow!("step 1 has no user message"))?;
+    if msgs.len() < 2 || msgs[0]["role"] != "system" || msgs[1]["role"] != "user" {
+        bail!("step {step}: expected the conversation to start with system, user");
+    }
+    let text_of = |m: &serde_json::Value| m["content"].as_str().unwrap_or_default().to_string();
+    let mut system = text_of(&msgs[0]);
+    let prompt = text_of(&msgs[1]);
+    let history: Vec<::adapt::store::Msg> = msgs[2..]
+        .iter()
+        .map(|m| ::adapt::store::Msg {
+            role: m["role"].as_str().unwrap_or_default().to_string(),
+            content: text_of(m),
+        })
+        .collect();
     // Train on the plain system prompt: a run made with --adapt already has the
     // retrieved corrections in front, and training adds its own context.
     if let Ok(a) = std::fs::read_to_string(run.join("adapt.json")) {
@@ -407,7 +503,8 @@ fn correct(
     }
     let correction = match (correction, correction_file) {
         (Some(c), _) => c,
-        (None, Some(f)) => std::fs::read_to_string(&f)?,
+        (None, Some(f)) => std::fs::read_to_string(&f)
+            .map_err(|e| anyhow::anyhow!("read correction file {}: {e}", f.display()))?,
         (None, None) => bail!("--correction or --correction-file is required"),
     };
     let n_checks = [
@@ -454,6 +551,7 @@ fn correct(
             check: Some(check),
             tag,
             source: "brain-user".into(),
+            history,
         },
         &AddOptions {
             supersede,

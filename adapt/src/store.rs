@@ -54,6 +54,13 @@ impl Check {
     }
 }
 
+/// One message of the conversation before the corrected step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Msg {
+    pub role: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Correction {
     pub id: String,
@@ -70,6 +77,11 @@ pub struct Correction {
     pub source: String,
     pub split: String,
     pub prompt_hash: String,
+    /// Messages after the request and before the corrected step: the model's earlier replies
+    /// and the observations it got. Empty for a step-1 correction. The full prompt the model
+    /// saw is [system, user(prompt), ..history].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<Msg>,
 }
 
 /// What a caller supplies. Everything else is derived.
@@ -83,6 +95,7 @@ pub struct NewCorrection {
     pub check: Option<Check>,
     pub tag: Option<String>,
     pub source: String,
+    pub history: Vec<Msg>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -159,6 +172,14 @@ pub fn normalize(s: &str) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+/// Normalized identity of a conversation history (empty for step 1).
+pub fn history_key(h: &[Msg]) -> String {
+    h.iter()
+        .map(|m| format!("{}:{}", m.role, normalize(&m.content)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn tokens(s: &str) -> Vec<String> {
@@ -303,13 +324,36 @@ impl CorrectionStore {
             }
         };
 
+        // History alternates assistant, user (observation), and ends on the observation the
+        // model saw right before the corrected step.
+        for (i, m) in new.history.iter().enumerate() {
+            let want = if i % 2 == 0 { "assistant" } else { "user" };
+            if m.role != want {
+                bail!(
+                    "history message {} has role {:?}; expected {want} (assistant/user pairs)",
+                    i + 1,
+                    m.role
+                );
+            }
+        }
+        if new.history.len() % 2 == 1 {
+            bail!("history must end with the observation (user message) the model saw before the corrected step");
+        }
+
         let norm_prompt = normalize(&new.prompt);
+        // Split by the request alone, so every step of the same request lands in the same split.
         let prompt_hash = sha256_hex(norm_prompt.as_bytes());
         let norm_corr = normalize(&new.correction);
-        let id = format!(
-            "c_{}",
-            &sha256_hex(format!("{prompt_hash}|{norm_corr}").as_bytes())[..12]
-        );
+        let hist_key = history_key(&new.history);
+        let id_src = if hist_key.is_empty() {
+            format!("{prompt_hash}|{norm_corr}")
+        } else {
+            format!(
+                "{prompt_hash}|{}|{norm_corr}",
+                sha256_hex(hist_key.as_bytes())
+            )
+        };
+        let id = format!("c_{}", &sha256_hex(id_src.as_bytes())[..12]);
 
         let live = self.live()?;
         if live.iter().any(|c| c.id == id) {
@@ -325,6 +369,9 @@ impl CorrectionStore {
             .iter()
             .filter(|c| !opts.supersede.contains(&c.id))
             .filter(|c| normalize(&c.correction) != norm_corr)
+            // Only the same point in the same conversation can conflict: step 1 and step 2
+            // corrections of one request are different lessons.
+            .filter(|c| history_key(&c.history) == hist_key)
             .filter(|c| {
                 let t: BTreeSet<String> = tokens(&c.prompt).into_iter().collect();
                 jaccard(&new_toks, &t) >= CONFLICT_JACCARD
@@ -352,6 +399,7 @@ impl CorrectionStore {
             source: new.source,
             split: split_for(&prompt_hash, frac).to_string(),
             prompt_hash,
+            history: new.history,
         };
         self.log.append(json!({
             "event": "correction",
@@ -536,6 +584,62 @@ mod tests {
         assert!(
             s.add(nc("q", r#"{"decision":"act"}"#), &opts()).is_err(),
             "check ask vs text act"
+        );
+    }
+
+    #[test]
+    fn multi_step_corrections_coexist_and_validate() {
+        let d = tempfile::tempdir().unwrap();
+        let s = CorrectionStore::open(d.path());
+        let req = "where is player-harness";
+        let step1 = s.add(nc(req, r#"{"decision":"ask"}"#), &opts()).unwrap();
+        let hist = vec![
+            Msg {
+                role: "assistant".into(),
+                content: r#"{"decision":"act","tool":"list_dir","input":"."}"#.into(),
+            },
+            Msg {
+                role: "user".into(),
+                content: "Observation: config/\nnotes.txt".into(),
+            },
+        ];
+        let mut n = nc(
+            req,
+            r#"{"decision":"answer","answer":"not in the workspace"}"#,
+        );
+        n.check = Some(Check::Decision {
+            value: "answer".into(),
+        });
+        n.history = hist.clone();
+        // Different step, different correction: not a conflict with step 1.
+        let step2 = s.add(n.clone(), &opts()).unwrap();
+        assert_ne!(step1.id, step2.id);
+        assert_eq!(step1.split, step2.split, "same request, same split");
+        assert_eq!(s.live().unwrap()[1].history, hist);
+        // Same step, different correction: conflict.
+        let mut m = n.clone();
+        m.correction = r#"{"decision":"ask","question":"which repo?"}"#.into();
+        m.check = Some(Check::Decision {
+            value: "ask".into(),
+        });
+        assert!(s
+            .add(m, &opts())
+            .unwrap_err()
+            .downcast_ref::<Conflict>()
+            .is_some());
+        // Malformed history.
+        let mut bad = n.clone();
+        bad.correction = "{\"decision\":\"answer\",\"answer\":\"x\"}".into();
+        bad.history = vec![hist[1].clone()];
+        assert!(s.add(bad, &opts()).is_err());
+        // Step-1 ids are unchanged by the history feature.
+        let d2 = tempfile::tempdir().unwrap();
+        let s2 = CorrectionStore::open(d2.path());
+        assert_eq!(
+            s2.add(nc(req, r#"{"decision":"ask"}"#), &opts())
+                .unwrap()
+                .id,
+            step1.id
         );
     }
 

@@ -28,7 +28,7 @@ def binary():
             p = os.path.join(root, c)
             if os.path.exists(p):
                 return p
-    sys.exit("build brain-adapt first: cargo build --release -p brain-adapt")
+    sys.exit("build brain-adapt first: cargo build --release --workspace")
 
 
 def run(*cmd, ok=True):
@@ -76,7 +76,20 @@ def make_tiny_model(path, corpus):
     transformers.Qwen2ForCausalLM(cfg).save_pretrained(path, safe_serialization=True)
 
 
+def check_deps():
+    missing = []
+    for mod in ("torch", "transformers", "peft", "tokenizers"):
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(mod)
+    if missing:
+        sys.exit(f"missing Python packages in {PY}: {', '.join(missing)}\n"
+                 f"install them into this venv: python -m pip install {' '.join(missing)}")
+
+
 def main():
+    check_deps()
     b = binary()
     work = tempfile.mkdtemp(prefix="adapt_smoke_")
     try:
@@ -108,6 +121,18 @@ def main():
                     "--correction", c, "--kind", "decision", "--check-decision", dec, "--allow-conflict")
                 corpus += [p, c]
                 n += 1
+        # later-step corrections: the conversation so far rides along as history
+        for i in range(4 if not learn else 8):
+            hist = os.path.join(work, f"hist{i}.json")
+            with open(hist, "w", encoding="utf-8") as f:
+                json.dump([{"role": "assistant", "content": '{"decision": "act", "tool": "list_dir", "input": "."}'},
+                           {"role": "user", "content": "Observation: config/\nnotes.txt"}], f)
+            p = f"Where is project{i * 13}?"
+            c = '{"decision": "answer", "answer": "project%d is not in my workspace."}' % (i * 13)
+            run(*base, "add", "--prompt", p, "--history-file", hist, "--model-output",
+                '{"decision": "act", "tool": "list_dir", "input": "config"}', "--correction", c,
+                "--kind", "decision", "--check-decision", "answer", "--allow-conflict")
+            corpus += [p, c]
         # a conflict must be refused without --allow-conflict
         r = run(*base, "add", "--prompt", "Delete every file in the item0 folder", "--correction",
                 '{"decision": "act"}', "--kind", "decision", "--check-decision", "act", ok=False)

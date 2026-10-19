@@ -226,3 +226,18 @@ system prompt. Stage 2 (a LoRA adapter that has to beat that baseline under a lo
 stage 3 (gated promotion with automatic rollback) are in `adapt/README.md`.
 `eval` and `dump-prompts` never use adapt, so the lens experiment is unaffected.
 
+## Search budget
+
+`--search-budget N` stops the agent from wandering: after N searches in a row (`list_dir` /
+`read_file`) turn up nothing related to the request, the next search is overridden to an answer.
+Off by default. It changes behavior, so never use it for the lens experiment; eval runs that use it
+are labeled `-budgetN`. Opening the file the request names never counts, and calculator steps are
+neutral. Replay any finished run to see where it would have fired:
+
+```powershell
+cargo run --release -- budget-replay runs\<run folder> --budget 2
+```
+
+On the logs so far, a budget of 2 fires only on the two wandering failures (run 7 "where is
+player-harness", and ask-04 in runs 3 and 4), and never on a passing dev task.
+

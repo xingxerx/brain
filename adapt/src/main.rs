@@ -139,6 +139,10 @@ struct AddArgs {
     prompt_file: Option<PathBuf>,
     #[arg(long)]
     system_file: Option<PathBuf>,
+    /// JSON array of {role, content}: the conversation after the request and before the
+    /// corrected step (assistant/user pairs). Omit for a step-1 correction.
+    #[arg(long)]
+    history_file: Option<PathBuf>,
     /// What the model said (optional but useful for retrieval context).
     #[arg(long, conflicts_with = "model_output_file")]
     model_output: Option<String>,
@@ -291,6 +295,19 @@ fn main() -> Result<()> {
                 check: Some(check),
                 tag: a.tag,
                 source: "local-cli".into(),
+                history: match &a.history_file {
+                    Some(f) => serde_json::from_str(
+                        &std::fs::read_to_string(f)
+                            .with_context(|| format!("read {}", f.display()))?,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "{}: expected a JSON array of {{role, content}}",
+                            f.display()
+                        )
+                    })?,
+                    None => vec![],
+                },
             };
             let opts = AddOptions {
                 supersede: a.supersede,

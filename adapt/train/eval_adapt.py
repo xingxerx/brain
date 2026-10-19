@@ -182,7 +182,8 @@ def main():
             with adapter_ctx(use_adapter):
                 for kind, r in items:
                     hits = retr(r["prompt"]) if use_ctx else {"context": "", "hits": []}
-                    text, ids = generate(common.messages_for(r["prompt"], r.get("system"), hits["context"]))
+                    text, ids = generate(common.messages_for(r["prompt"], r.get("system"), hits["context"],
+                                                             r.get("history")))
                     if kind == "heldout":
                         ok = common.passes(r["check"], text, r["correction"])
                     else:

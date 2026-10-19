@@ -28,4 +28,7 @@ m = common.messages_for("hi", None, "")
 assert m == [{"role": "user", "content": "hi"}], m
 m = common.messages_for("hi", "SYS", "CTX")
 assert m[0] == {"role": "system", "content": "CTX\n\nSYS"}, m
+h = [{"role": "assistant", "content": "A"}, {"role": "user", "content": "Observation: x"}]
+m = common.messages_for("hi", "SYS", "", h)
+assert [x["role"] for x in m] == ["system", "user", "assistant", "user"], m
 print("python parity OK")

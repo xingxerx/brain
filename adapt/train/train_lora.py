@@ -32,7 +32,7 @@ def build_example(tok, row, max_len, context=""):
     """Returns (input_ids, labels) or a reason string if the row can't be used.
     `context` is the leave-one-out retrieval block, so training sees the same
     prompt shape the adapter is served with (adapter + retrieval)."""
-    msgs = common.messages_for(row["prompt"], row.get("system"), context)
+    msgs = common.messages_for(row["prompt"], row.get("system"), context, row.get("history"))
     prompt_text = common.render(tok, msgs, "off")
     full_text = tok.apply_chat_template(msgs + [{"role": "assistant", "content": row["correction"]}],
                                         tokenize=False, enable_thinking=False)

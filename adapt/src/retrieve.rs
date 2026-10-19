@@ -38,6 +38,9 @@ pub struct Hit {
     pub prompt: String,
     pub model_output: String,
     pub correction: String,
+    /// For a later-step correction: the observation the model had just seen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub situation: Option<String>,
 }
 
 pub struct Index {
@@ -138,6 +141,7 @@ impl Index {
                     prompt: c.prompt.clone(),
                     model_output: c.model_output.clone(),
                     correction: c.correction.clone(),
+                    situation: c.history.last().map(|m| m.content.clone()),
                 })
             })
             .collect();
@@ -171,9 +175,12 @@ pub fn format_context(hits: &[Hit]) -> String {
         "Past corrections from the user. Apply them when the current request is the same kind of case:\n",
     );
     for h in hits {
+        s.push_str(&format!("- Request: {}\n", clip(&h.prompt, 400)));
+        if let Some(sit) = &h.situation {
+            s.push_str(&format!("  Mid-task, right after: {}\n", clip(sit, 300)));
+        }
         s.push_str(&format!(
-            "- Request: {}\n  Wrong reply: {}\n  Correct reply: {}\n",
-            clip(&h.prompt, 400),
+            "  Wrong reply: {}\n  Correct reply: {}\n",
             clip(&h.model_output, 300),
             clip(&h.correction, 600)
         ));
@@ -200,6 +207,7 @@ mod tests {
             source: "local-cli".into(),
             split: split.into(),
             prompt_hash: String::new(),
+            history: vec![],
         }
     }
 

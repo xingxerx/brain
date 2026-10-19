@@ -37,14 +37,14 @@ adapt/
 
 ## Build and test (PowerShell, from the brain repo root)
 
-`adapt` is a member of brain's Cargo workspace, so it builds into the repo's own `target\`.
+`adapt` is a member of brain's Cargo workspace, so it builds into the repo's own `target\`. Plain `cargo run` / `cargo build` / `cargo test` act on the loop only (so `cargo run --release -- ask ...` works). Use `--workspace` to include adapt, and `cargo adapt <command>` (an alias in `.cargo/config.toml`) to run the brain-adapt CLI, for example `cargo adapt stats`.
 
 ```powershell
-cargo build --release
+cargo build --release --workspace
 ```
 
 ```powershell
-cargo test
+cargo test --workspace
 ```
 
 ```powershell
@@ -80,6 +80,12 @@ cargo run --release -- ask "Summarize the file"
 
 ```powershell
 cargo run --release -- correct runs\<that run folder> --correction-file fix.json
+```
+
+If the mistake came later in the run (the first step was fine, then it went wrong), name the step. The correction keeps the whole conversation up to that step, so the lesson is "after seeing this, do that":
+
+```powershell
+cargo run --release -- correct runs\<that run folder> --step 2 --correction-file fix.json
 ```
 
 For decision fixes, the check is taken from the decision inside your correction. For other kinds, add `--kind answer --check-contains "..."`. Then use past corrections on later requests:
@@ -232,6 +238,7 @@ exits with code 2. Retrain from the same corrections. The corrections are the as
 | F14 | corrections typed without the loop's system prompt train the wrong prompt shape | `--from-dump` capture; `add` and `stats` warn |
 | F15 | store edited between export and train/eval | train and eval refuse a stale export |
 | F16 | a fixed BM25 cutoff retrieved nothing while the store was small (found in the loop test) | a hit must cover `retrieval.min_coverage` (half) of the request's content words; BM25 only ranks |
+| F17 | most real mistakes happen mid-run, but corrections only covered step 1 (found on "where is player-harness") | `brain correct --step N` keeps the conversation up to step N as `history`; training, eval and retrieval use it, and a test confirms the rebuilt prompt is byte-identical to what the loop sent |
 
 ## Not yet verified
 
