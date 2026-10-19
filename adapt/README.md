@@ -31,6 +31,8 @@ adapt/
   train/common.py      rules shared with Rust (parity-tested)
   train/train_lora.py  bf16 LoRA from scratch on the train split
   train/eval_adapt.py  bare / retrieval / adapter / adapter+retrieval, canary, drift, verdict
+  train/lens.py        the sidecar probe applied offline (thinking-off, base or adapter)
+  train/lens_filter.py lens use 1: pick which train corrections the LoRA trains on
   tests/               shared parity cases, CPU end-to-end smoke
   data/                corrections.jsonl and adapters.jsonl (commit these), export/ (ignored)
 ```
@@ -130,10 +132,10 @@ Word match only finds near-exact repeats: "where is the LIMEN repo" never reache
 "where is player-harness" correction (run 13). So retrieval also compares **meaning**, using the
 embedding model LM Studio already has (`text-embedding-nomic-embed-text-v1.5`). A past correction
 is used if it shares half the request's content words **or** its meaning is at least
-`retrieval.semantic.min_similarity` close (0.45, from the first calibration below). Settings are in `prereg.json`:
+`retrieval.semantic.min_similarity` close (0.7 to start). Settings are in `prereg.json`:
 
 ```json
-"semantic": { "model": "text-embedding-nomic-embed-text-v1.5", "url": "http://localhost:1234/v1", "min_similarity": 0.45 }
+"semantic": { "model": "text-embedding-nomic-embed-text-v1.5", "url": "http://localhost:1234/v1", "min_similarity": 0.7 }
 ```
 
 - LM Studio's server must be running (`lms server start`). It loads the embedding model on first use, or load it yourself: `lms load text-embedding-nomic-embed-text-v1.5`.
@@ -141,7 +143,7 @@ is used if it shares half the request's content words **or** its meaning is at l
 - Each correction is embedded once and cached in `data/embeddings.jsonl` (safe to delete).
 - Set `"semantic": null` to go back to word match only. Use `BRAIN_EMBED_URL` to point at another server.
 
-**Calibrate the threshold** on your own corrections. First calibration (Oct 18 2026, nomic-embed-text v1.5, one stored correction): "where is the LIMEN repo" scored 0.498 against "where is player-harness" (should match), "what is 17 times 23" scored 0.371 (should not). 0.45 sits between them. Two points is thin: recalibrate once you have 20 to 30 corrections. See every stored correction's word overlap and meaning similarity for a request:
+**Calibrate the threshold** on your own corrections. 0.7 is a starting guess, not measured. See every stored correction's word overlap and meaning similarity for a request:
 
 ```powershell
 cargo adapt retrieve --explain "where is the LIMEN repo"
@@ -178,8 +180,9 @@ brain-adapt verify
 
 ## Stage 2: one manual experiment (RTX 5080)
 
-1. Fill in the `TODO` in `prereg.json` (`serving_precision`: whatever the loop actually serves,
-   for example `int8-t0` on the laptop or `bf16` on the 5080). Read `PREREG_ADAPT.md`. Commit, then lock:
+1. Fill in the two `TODO`s in `prereg.json`: `serving_precision` (whatever the loop actually serves,
+   for example `int8-t0` on the laptop or `bf16` on the 5080) and `lens.probe_sha256` (step 1b).
+   Read `PREREG_ADAPT.md`. Commit, then lock:
 
 ```powershell
 brain-adapt prereg lock
@@ -189,15 +192,42 @@ brain-adapt prereg lock
 git add adapt; git commit -m "adapt: lock PREREG"
 ```
 
+1b. Before locking: the lens. adapt runs thinking off, and the current `sidecar\probe.json` was
+trained thinking on (a different readout token), so train a thinking-off probe once. Same probe
+split, same CV, about the same time as the original:
+
+```powershell
+python sidecar\probe.py collect --no-think --precision int8-t0 --prompts runs\prompts_probe.jsonl --out runs\acts_probe_nothink.npz
+```
+
+```powershell
+python sidecar\probe.py train --acts runs\acts_probe_nothink.npz --out sidecar\probe_nothink.json
+```
+
+Check it still beats bag-of-words in the printout (if not, set `lens.filter` and `lens.eval_report`
+to false and record why). Then pin it and put the hash in `prereg.json` as `lens.probe_sha256`:
+
+```powershell
+(Get-FileHash sidecar\probe_nothink.json -Algorithm SHA256).Hash.ToLower()
+```
+
 2. Freeze the data and train (bf16, from scratch; prints the adapter folder):
 
 ```powershell
 brain-adapt export
 ```
 
+Lens filter (use 1). One forward pass per train correction on the base model, no generation.
+Drops the corrections the probe confidently disagrees with from LoRA training only; they stay in
+the store and in retrieval. Read `lens_review.jsonl` afterwards:
+
 ```powershell
 $env:QWEN_PATH = "C:\models\Qwen3.5-4B"
-python adapt\train\train_lora.py --export adapt\data\export\<head>
+python adapt\train\lens_filter.py --export adapt\data\export\<head> --probe sidecar\probe_nothink.json --precision int8-t0
+```
+
+```powershell
+python adapt\train\train_lora.py --export adapt\data\export\<head> --lens-filter adapt\data\export\<head>\lens_filter.json
 ```
 
 3. Register and evaluate in the serving precision, with brain's probe and dev prompts as the canary:
@@ -211,8 +241,18 @@ cargo run --release -- dump-prompts --split probe --out runs\prompts_probe.jsonl
 ```
 
 ```powershell
-python adapt\train\eval_adapt.py --export adapt\data\export\<head> --adapter adapt\adapters\<adapter_id> --precision int8-t0 --canary runs\prompts_probe.jsonl --canary runs\prompts_dev.jsonl --out adapt\evals\<adapter_id>
+python adapt\train\eval_adapt.py --export adapt\data\export\<head> --adapter adapt\adapters\<adapter_id> --precision int8-t0 --canary runs\prompts_probe.jsonl --canary runs\prompts_dev.jsonl --probe sidecar\probe_nothink.json --out adapt\evals\<adapter_id>
 ```
+
+`--probe` adds the lens report (use 2) to `verdict.json` under `"lens"`, plus `lens.jsonl`. It never
+changes pass or fail. How to read it:
+
+| Field | Meaning |
+|---|---|
+| `heldout_adapter_vs_bare` | did the adapter move the internal judgment toward your corrections (wins, losses, mean shift in p(label)) |
+| `said_vs_meant.said_not_meant` | text right, internal judgment still wrong: a surface fix that may not generalize |
+| `said_vs_meant.meant_not_said` | judges right internally, says something else |
+| `canary_internal_drift_kl` | how far the internal judgment moved on unrelated dev tasks |
 
 4. Read `adapt\evals\<adapter_id>\review.jsonl`. If the verdict is `fail`, record that as the result
    (a null result, like the QRNG test) and stay on stage 1.
@@ -268,6 +308,7 @@ exits with code 2. Retrain from the same corrections. The corrections are the as
 | F15 | store edited between export and train/eval | train and eval refuse a stale export |
 | F16 | a fixed BM25 cutoff retrieved nothing while the store was small (found in the loop test) | a hit must cover `retrieval.min_coverage` (half) of the request's content words; BM25 only ranks |
 | F17 | most real mistakes happen mid-run, but corrections only covered step 1 (found on "where is player-harness") | `brain correct --step N` keeps the conversation up to step N as `history`; training, eval and retrieval use it, and a test confirms the rebuilt prompt is byte-identical to what the loop sent |
+| F19 | the lens as a training target would be learned around (the adapter moves the probe's readout, not the behavior) | the lens only picks rows (lens_filter.py) and reports (eval_adapt.py --probe); train_lora.py can't import lens code, checked by test_common.py; heldout is never filtered |
 | F18 | word match only retrieved exact repeats (run 13: the LIMEN request never saw the player-harness lesson) | retrieval also compares meaning with a local embedding model; word match stays as the fallback; training and eval refuse to fall back |
 
 ## Not yet verified
@@ -275,5 +316,7 @@ exits with code 2. Retrain from the same corrections. The corrections are the as
 - Nothing has run on Qwen3.5-4B or a GPU yet. The smoke test proves only that the plumbing works.
 - `eval_adapt.py` reads brain's `dump-prompts` rows as either `messages` or `prompt`/`request`,
   with the label in `expected_first`. If the real file differs, it stops and prints the keys it found.
+- The lens filter and lens report have only run with a fake probe on the tiny smoke model. The
+  thinking-off probe doesn't exist yet (step 1b), and whether it holds up thinking-off is itself unknown.
 - Loading LoRA through peft on Qwen3.5's Gated DeltaNet layers with `target_modules: all-linear`
   is untested. Run train_lora.py with `--smoke --max-steps 2` against the real model first.

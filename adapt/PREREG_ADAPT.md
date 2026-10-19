@@ -42,6 +42,31 @@ rest are reported.
    smoke adapter **before** locking, and write down what you saw.
 4. **Human review:** I read `review.jsonl` (a 10% sample plus every canary regression) and promote with `--reviewed`.
 
+## The lens (filter and report, never a target)
+
+The thinking-off probe pinned by `lens.probe_sha256` reads the model's internal first-move
+judgment at the last prompt token. It has exactly two jobs:
+
+1. **Filter (`lens.filter`):** on the base model, before training, every train-split decision
+   correction is read. If the probe's top class is not the corrected decision with probability
+   >= `lens.drop_confidence` (0.9), that row is left out of LoRA training. It stays in the store and
+   in retrieval. If more than `lens.max_drop_frac` (0.2) of the train split would be dropped, the
+   filter refuses: that is evidence about the probe, not about the corrections, and it is recorded
+   as a result. Rows the probe can't read (non-decision kinds, later-step corrections, another
+   system prompt) are kept. **Heldout is never filtered**, so the gate still scores every heldout row.
+2. **Report (`lens.eval_report`):** the eval reads the probe on bare and adapter (no retrieval
+   context) for gradable heldout decision rows and dev canary rows (never the probe split, which
+   the probe was fit on). It reports lens accuracy, the shift in p(corrected decision), a paired
+   McNemar, said-vs-meant counts and internal drift on canary. **None of it is a pass criterion.**
+
+The lens is never a loss, reward or selection criterion for the adapter. Optimizing against it
+would teach the adapter to move the readout instead of the behavior, and the probe would stop
+meaning anything. `train_lora.py` cannot import lens code (checked by `test_common.py`).
+
+Disclosure: 0.9 and 0.2 are starting guesses, not calibrated. The probe's CV accuracy was measured
+thinking-on; the thinking-off probe must be trained and its CV checked against bag-of-words
+before locking. If it doesn't beat bag-of-words, set both lens flags to false before locking.
+
 ## If it fails
 
 Stay on stage 1. Record the verdict file and the numbers. Allowed follow-ups, each needing a

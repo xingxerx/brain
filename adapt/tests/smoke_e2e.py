@@ -2,8 +2,9 @@
 
     python adapt/tests/smoke_e2e.py
 
-Proves the pipes connect: capture -> export -> train (LoRA) -> register -> eval
-(all four conditions, drift, review file) -> the gate refuses the smoke adapter.
+Proves the pipes connect: capture -> export -> lens filter -> train (LoRA) -> register
+-> eval (all four conditions, drift, lens report, review file) -> the gate refuses the
+smoke adapter.
 It proves nothing about whether the adapter helps: the model is random noise.
 Needs torch, transformers, peft, tokenizers and a built brain-adapt binary.
 """
@@ -76,6 +77,26 @@ def make_tiny_model(path, corpus):
     transformers.Qwen2ForCausalLM(cfg).save_pretrained(path, safe_serialization=True)
 
 
+def sha256_file(path):
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def make_fake_probe(path, hidden=64):
+    """A probe file in sidecar/probe.py's format for the tiny model (hidden 64, layer 1)."""
+    import random
+    rng = random.Random(7)
+    d = {"version": 1, "classes": ["act", "answer", "ask", "abort"], "layers": [1], "name": "L1",
+         "lambda": 0.1, "mean": [0.0] * hidden, "std": [1.0] * hidden,
+         "W": [[rng.gauss(0, 0.3) for _ in range(hidden)] for _ in range(4)], "b": [8.0, 0.0, 0.0, 0.0],
+         "cv": {"accuracy": 0.0, "note": "smoke: random weights, biased to act so the filter drops rows"},
+         "trained_on": {"file": "smoke", "splits": ["probe"], "n": 0, "precision": "fp32",
+                        "enable_thinking": False, "system_prompt_sha256": "smoke"}}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(d, f)
+
+
 def check_deps():
     missing = []
     for mod in ("torch", "transformers", "peft", "tokenizers"):
@@ -105,6 +126,11 @@ def main():
         pr["generation"]["max_new_tokens"] = 24
         pr["gate"]["drift_prompts"] = 4
         pr["gate"]["drift_tokens"] = 8
+        # Lens: a fake thinking-off probe sized for the tiny model. Random weights, so it
+        # proves the filter and the lens report run end to end, nothing about the lens.
+        probe = os.path.join(work, "probe_nothink.json")
+        make_fake_probe(probe)
+        pr["lens"]["probe_sha256"] = sha256_file(probe)
         learn = bool(os.environ.get("SMOKE_LEARN"))
         if learn:
             # Learning check: aggressive settings so a tiny random model can fit the
@@ -154,14 +180,40 @@ def main():
         make_tiny_model(model, corpus + [TEMPLATE] * 3)
         print("tiny model OK")
 
-        # 4. train
+        # 3b. lens filter (use 1): train split only, base model, writes lens_filter.json
+        r = run(PY, os.path.join(TRAIN, "lens_filter.py"), "--export", man["dir"], "--probe", probe,
+                "--base", model, "--precision", "fp32", "--prereg", prereg, "--dir", data, "--smoke")
+        lf_path = os.path.join(man["dir"], "lens_filter.json")
+        lf = json.load(open(lf_path, encoding="utf-8"))
+        assert sum(lf["counts"].values()) == man["n_train"], lf["counts"]
+        assert all(r_["status"] != "n/a" or r_["why"] for r_ in lf["rows"])
+        heldout_ids = {json.loads(l)["id"] for l in open(os.path.join(man["dir"], "heldout.jsonl"), encoding="utf-8")}
+        assert not heldout_ids & {r_["id"] for r_ in lf["rows"]}, "the filter touched heldout"
+        assert lf["dropped"] and lf["counts"]["contradicts"] == len(lf["dropped"]), lf["counts"]
+        assert "max_drop_frac" in r.stdout, "the over-limit warning must show (smoke continues, real runs stop)"
+        print(f"lens filter OK: {lf['counts']}, dropped {len(lf['dropped'])}")
+        # a hand-edited filter file must be refused before any training happens
+        bad_lf = os.path.join(work, "lens_filter_edited.json")
+        json.dump({**lf, "dropped": lf["dropped"][1:] if lf["dropped"] else ["c_fake"]},
+                  open(bad_lf, "w", encoding="utf-8"))
+        r = run(PY, os.path.join(TRAIN, "train_lora.py"), "--export", man["dir"], "--base", model,
+                "--out", os.path.join(work, "adapters"), "--prereg", prereg, "--dir", data, "--adapt-bin", b,
+                "--smoke", "--precision", "fp32", "--max-steps", "1", "--lens-filter", bad_lf, ok=False)
+        assert r.returncode != 0 and "edited" in r.stderr, r.stderr
+        print("lens filter tamper check OK")
+
+        # 4. train (filtered in the plain smoke; the learning check trains on everything)
         r = run(PY, os.path.join(TRAIN, "train_lora.py"), "--export", man["dir"], "--base", model,
                 "--out", os.path.join(work, "adapters"), "--prereg", prereg, "--dir", data,
-                "--adapt-bin", b, "--smoke", "--precision", "fp32", "--max-steps", "0" if learn else "4")
+                "--adapt-bin", b, "--smoke", "--precision", "fp32", "--max-steps", "0" if learn else "4",
+                *([] if learn else ["--lens-filter", lf_path]))
         print(r.stdout.strip().splitlines()[-2])
         adir = [l.split("-> ")[1] for l in r.stdout.splitlines() if l.startswith("adapter ")][0]
         am = json.load(open(os.path.join(adir, "manifest.json"), encoding="utf-8"))
         assert am["smoke"] is True and am["n_examples"] > 0 and am["loss_curve"], am
+        if not learn:
+            assert am["lens_filter"]["n_dropped"] == len(lf["dropped"]), am["lens_filter"]
+            assert am["n_examples"] + len(am["skipped"]) == man["n_train"] - len(lf["dropped"]), am
         lc_ = am["loss_curve"]
         print(f"train OK: {am['n_examples']} examples ({am['n_with_context']} with context), "
               f"skipped {len(am['skipped'])}, loss {lc_[0]} -> {lc_[-1]} over {len(lc_)} steps")
@@ -183,7 +235,7 @@ def main():
 
         ev = [PY, os.path.join(TRAIN, "eval_adapt.py"), "--export", man["dir"], "--adapter", adir,
               "--base", model, "--precision", "fp32", "--prereg", prereg, "--dir", data, "--adapt-bin", b,
-              "--smoke", "--limit", "0" if learn else "6"]
+              "--smoke", "--limit", "0" if learn else "6", "--probe", probe]
         r = run(*ev, "--canary", bad, "--out", os.path.join(work, "eval_bad"), ok=False)
         assert r.returncode != 0 and "heldout" in r.stderr, "brain heldout rows must be refused"
 
@@ -194,6 +246,13 @@ def main():
         assert set(v["summary"]) == {"bare", "retrieval", "adapter", "adapter_retrieval"}, v["summary"]
         assert v["drift"]["prompts"] == 4 and v["drift"]["mean_kl"] is not None, v["drift"]
         assert v["verdict"] == "fail" and "smoke run" in v["reasons"], v
+        # lens report (use 2): present, report-only, never a reason in the verdict
+        lr = v["lens"]
+        assert lr and lr["gating"] is False and set(lr["conditions"]) == {"bare", "adapter"}, lr
+        assert "heldout_adapter_vs_bare" in lr and lr["canary_internal_drift_kl"] is not None, lr
+        assert not any("lens" in x for x in v["reasons"]), v["reasons"]
+        assert os.path.getsize(os.path.join(out, "lens.jsonl")) > 0
+        print(f"lens eval OK: {json.dumps(lr['conditions'])}")
         if learn:
             print(json.dumps(v["summary"]), json.dumps(v["comparisons"]), v["reasons"])
             m = v["comparisons"]["adapter_retrieval_vs_retrieval_heldout"]

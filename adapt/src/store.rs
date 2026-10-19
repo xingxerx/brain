@@ -174,6 +174,11 @@ pub fn normalize(s: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Strip a leading byte-order mark and surrounding whitespace (including CRLF).
+pub fn clean_text(s: &str) -> String {
+    s.trim_start_matches('\u{feff}').trim().to_string()
+}
+
 /// Normalized identity of a conversation history (empty for step 1).
 pub fn history_key(h: &[Msg]) -> String {
     h.iter()
@@ -262,6 +267,12 @@ impl CorrectionStore {
     }
 
     pub fn add(&self, new: NewCorrection, opts: &AddOptions) -> Result<Correction> {
+        // Files written by Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) start with a
+        // byte-order mark and end with CRLF. Both would become part of the training target and
+        // the retrieved context, so the correction text is cleaned here (seen on c_ee17088522ba).
+        let mut new = new;
+        new.correction = clean_text(&new.correction);
+        new.model_output = clean_text(&new.model_output);
         if !SOURCES.contains(&new.source.as_str()) {
             bail!("source {:?} is not allowed; only {:?}", new.source, SOURCES);
         }
@@ -356,7 +367,7 @@ impl CorrectionStore {
         let id = format!("c_{}", &sha256_hex(id_src.as_bytes())[..12]);
 
         let live = self.live()?;
-        if live.iter().any(|c| c.id == id) {
+        if live.iter().any(|c| c.id == id) && !opts.supersede.contains(&id) {
             bail!("duplicate: correction {id} already exists with the same prompt and correction");
         }
         for s in &opts.supersede {
@@ -641,6 +652,25 @@ mod tests {
                 .id,
             step1.id
         );
+    }
+
+    #[test]
+    fn bom_and_crlf_are_cleaned_and_self_supersede_works() {
+        let d = tempfile::tempdir().unwrap();
+        let s = CorrectionStore::open(d.path());
+        let dirty = "\u{feff}{\"decision\":\"ask\"}\r\n";
+        let a = s.add(nc("bom test request", dirty), &opts()).unwrap();
+        assert_eq!(a.correction, "{\"decision\":\"ask\"}");
+        // Re-adding the same lesson to replace it is allowed when it supersedes itself.
+        let o = AddOptions {
+            supersede: vec![a.id.clone()],
+            ..opts()
+        };
+        let b = s
+            .add(nc("bom test request", "{\"decision\":\"ask\"}"), &o)
+            .unwrap();
+        assert_eq!(a.id, b.id);
+        assert_eq!(s.live().unwrap().len(), 1);
     }
 
     #[test]

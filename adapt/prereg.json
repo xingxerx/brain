@@ -12,7 +12,7 @@
     "semantic": {
       "model": "text-embedding-nomic-embed-text-v1.5",
       "url": "http://localhost:1234/v1",
-      "min_similarity": 0.45
+      "min_similarity": 0.7
     }
   },
   "generation": { "max_new_tokens": 384 },
@@ -36,5 +36,12 @@
     "max_drift_kl": 0.05,
     "review_fraction": 0.1
   },
-  "live": { "min_interactions": 100, "tolerance": 0.25 }
+  "live": { "min_interactions": 100, "tolerance": 0.25 },
+  "lens": {
+    "filter": true,
+    "probe_sha256": "TODO",
+    "drop_confidence": 0.9,
+    "max_drop_frac": 0.2,
+    "eval_report": true
+  }
 }

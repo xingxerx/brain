@@ -14,6 +14,9 @@ Design (from the outside-view review, see adapt/README.md):
       16 GB card with gradient checkpointing. No bitsandbytes needed to train.
   Loss is on the assistant reply only; prompt tokens are masked with -100.
   Rows that do not fit max_len are skipped and reported, never truncated.
+  Lens: --lens-filter only removes rows before training (lens_filter.py decided which).
+      This file never loads the probe or reads hidden states, so the lens can't leak
+      into the loss. test_common.py checks that.
 """
 import argparse
 import json
@@ -55,6 +58,33 @@ def build_example(tok, row, max_len, context=""):
     return f_ids, labels
 
 
+def load_lens_filter(a, pr, pr_sha, em):
+    """The filter must belong to this exact export and PREREG, and the PREREG decides
+    whether one is used at all (a pre-registered choice, not a per-run one)."""
+    want = bool((pr.get("lens") or {}).get("filter"))
+    if not a.lens_filter:
+        if want and not a.smoke:
+            die("the PREREG says lens.filter is true: run lens_filter.py and pass --lens-filter")
+        return None
+    if not want and not a.smoke:
+        die("--lens-filter given but the PREREG says lens.filter is false")
+    with open(a.lens_filter, encoding="utf-8") as f:
+        lf = json.load(f)
+    if common.lens_filter_sha(lf) != lf.get("filter_sha256"):
+        die(f"{a.lens_filter} was edited after lens_filter.py wrote it")
+    for k, want_v in (("export_chain_head", em["chain_head"]), ("train_sha256", em["train_sha256"])):
+        if lf.get(k) != want_v:
+            die(f"lens filter {k} does not match this export; re-run lens_filter.py on it")
+    if not a.smoke:
+        if lf.get("smoke"):
+            die("that lens filter was a smoke run")
+        if lf.get("prereg_sha256") != pr_sha:
+            die("lens filter was made under a different PREREG")
+        if lf.get("probe_sha256") != pr["lens"].get("probe_sha256"):
+            die("lens filter used a probe the PREREG does not pin")
+    return lf
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--export", required=True, help="folder from `brain-adapt export`")
@@ -67,6 +97,7 @@ def main():
                     help="plumbing test: skips the lock and size checks, fp32 allowed, never promotable")
     ap.add_argument("--precision", default="bf16", help="training precision (bf16; fp32 only with --smoke)")
     ap.add_argument("--max-steps", type=int, default=0, help="smoke only: stop after this many optimizer steps")
+    ap.add_argument("--lens-filter", help="lens_filter.json from lens_filter.py; required when the PREREG says lens.filter")
     a = ap.parse_args()
 
     import torch
@@ -97,14 +128,23 @@ def main():
             die(f"{em['n_heldout_gradable']} gradable heldout < {pr['min_heldout_gradable']}")
     if any(r["split"] != "train" for r in train):
         die("train.jsonl contains non-train rows; refusing (leakage)")
+    lens_filter = load_lens_filter(a, pr, pr_sha, em)
+    if lens_filter:
+        drop = set(lens_filter["dropped"])
+        train = [r for r in train if r["id"] not in drop]
+        print(f"lens filter {lens_filter['filter_sha256'][:12]}: dropped {len(drop)}, training on {len(train)}")
+        if not train:
+            die("the lens filter dropped every training row")
 
     lc = pr["lora"]
     cache = os.path.join(a.dir, ".base_hash_cache.json")
     print("hashing base weights (cached after the first run)...", flush=True)
     bh = common.base_hash(a.base, cache)
     config = {k: lc[k] for k in sorted(lc)}
-    adapter_id = "a_" + common.sha256_text(common.canonical(
-        [bh, em["data_sha256"], config, pr_sha, a.precision, "smoke" if a.smoke else "real"]))[:12]
+    id_parts = [bh, em["data_sha256"], config, pr_sha, a.precision, "smoke" if a.smoke else "real"]
+    if lens_filter:  # a filtered and an unfiltered adapter on the same data are different adapters
+        id_parts.append(lens_filter["filter_sha256"])
+    adapter_id = "a_" + common.sha256_text(common.canonical(id_parts))[:12]
     out_dir = os.path.join(a.out, adapter_id)
     if os.path.exists(os.path.join(out_dir, "manifest.json")):
         die(f"{out_dir} already exists: same base, data, config and PREREG were already trained")
@@ -207,6 +247,9 @@ def main():
         "n_examples": len(examples),
         "n_with_context": with_ctx,
         "skipped": [{"id": i, "why": w} for i, w in skipped],
+        "lens_filter": ({"filter_sha256": lens_filter["filter_sha256"], "probe_sha256": lens_filter["probe_sha256"],
+                         "n_dropped": len(lens_filter["dropped"]), "dropped": lens_filter["dropped"]}
+                        if lens_filter else None),
         "loss_curve": curve,
         "seconds": round(time.time() - t0, 1),
         "versions": {"torch": torch.__version__, "peft": peft.__version__,

@@ -23,6 +23,12 @@ Pass needs all of (thresholds come from the locked PREREG):
   4. the adapter matches this base model, dataset and PREREG
 The verdict file is input to `brain-adapt ledger promote`, which re-checks the bindings.
 A human still reads review.jsonl before promoting.
+
+Lens report (--probe, use 2 of the lens; REPORT ONLY, never part of the pass/fail):
+  The thinking-off probe reads the model's internal first-move judgment at the last prompt
+  token, for bare and adapter (no retrieval context, the shape the probe was trained on).
+  It answers what the text scores can't: did the adapter change what the model judges
+  right, or only what it says? Written to verdict.json "lens" and lens.jsonl.
 """
 import argparse
 import json
@@ -80,6 +86,78 @@ def canary_rows(paths):
     return rows
 
 
+def lens_eval(a, pr, model, tok, held, canary, results, adapter_ctx, out_dir):
+    """Report-only lens readout, bare vs adapter. Nothing here can change the verdict."""
+    import lens as lenslib
+
+    lens = lenslib.Lens(a.probe, a.precision, smoke=a.smoke)
+    if not a.smoke and lens.sha256 != (pr.get("lens") or {}).get("probe_sha256"):
+        die(f"probe sha256 {lens.sha256[:12]} is not the one the PREREG pins")
+    lconds = ("bare", "adapter") if a.adapter else ("bare",)
+
+    items, na = [], {}
+    for kind, rows in (("heldout", held), ("canary", canary)):
+        for r in rows:
+            row = r if kind == "heldout" else {"check": {"type": "decision", "value": r["label"]},
+                                                "system": r.get("system")}
+            why = lens.na_reason(row)
+            if not why and kind == "canary" and r.get("split") == "probe":
+                # The probe was fit on exactly these prompts; reading them grades it on its own training data.
+                why = "probe-split canary row (the probe's own training data)"
+            if why:
+                key = f"{kind}: {why}"
+                na[key] = na.get(key, 0) + 1
+                continue
+            items.append((kind, r["id"], r["prompt"], r.get("system"), row["check"]["value"]))
+    labels = {(k, rid): lab for k, rid, _, _, lab in items}
+    reads = {c: {} for c in lconds}
+    t0 = time.time()
+    for c in lconds:
+        with adapter_ctx(c == "adapter"):
+            for kind, rid, prompt, system, _ in items:
+                reads[c][(kind, rid)] = lens.read(model, tok, common.messages_for(prompt, system))[0]
+    print(f"lens: {len(items)} items x {len(lconds)} conditions read in {time.time() - t0:.0f}s", flush=True)
+
+    with open(os.path.join(out_dir, "lens.jsonl"), "w", encoding="utf-8") as f:
+        for k, lab in labels.items():
+            f.write(json.dumps({"set": k[0], "id": k[1], "label": lab,
+                                **{c: {"lens_top": lenslib.top(reads[c][k]), "p_label": round(reads[c][k][lab], 6),
+                                       "text_pass": results[c].get(k)} for c in lconds}}) + "\n")
+
+    def right(c, k):
+        return lenslib.top(reads[c][k]) == labels[k]
+
+    def stats(c, kind):
+        keys = [k for k in labels if k[0] == kind]
+        if not keys:
+            return None
+        # Said vs meant, both read without retrieval context so they describe the same prompt.
+        # said_not_meant: the words are right but the internal judgment still leans wrong (a
+        # surface fix). meant_not_said: the model judges right internally but says otherwise.
+        svm = {"both_right": 0, "said_not_meant": 0, "meant_not_said": 0, "both_wrong": 0}
+        for k in keys:
+            t, l = bool(results[c].get(k)), right(c, k)
+            svm["both_right" if t and l else "said_not_meant" if t else "meant_not_said" if l else "both_wrong"] += 1
+        return {"n": len(keys), "lens_acc": round(sum(right(c, k) for k in keys) / len(keys), 4),
+                "mean_p_label": round(sum(reads[c][k][labels[k]] for k in keys) / len(keys), 4),
+                "said_vs_meant": svm}
+
+    report = {"gating": False, "probe": lens.summary(), "not_read": na,
+              "conditions": {c: {"heldout": stats(c, "heldout"), "canary": stats(c, "canary")} for c in lconds}}
+    if a.adapter:
+        hk = [k for k in labels if k[0] == "heldout"]
+        b = sum(right("adapter", k) and not right("bare", k) for k in hk)
+        cl = sum(right("bare", k) and not right("adapter", k) for k in hk)
+        ck = [k for k in labels if k[0] == "canary"]
+        report["heldout_adapter_vs_bare"] = {
+            "new_wins": b, "new_losses": cl, "p_one_sided": round(mcnemar_one_sided(b, cl), 6),
+            "mean_shift_p_label": (round(sum(reads["adapter"][k][labels[k]] - reads["bare"][k][labels[k]]
+                                             for k in hk) / len(hk), 4) if hk else None)}
+        report["canary_internal_drift_kl"] = (round(sum(lenslib.kl(reads["bare"][k], reads["adapter"][k])
+                                                        for k in ck) / len(ck), 6) if ck else None)
+    return report
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--export", required=True)
@@ -93,6 +171,7 @@ def main():
     ap.add_argument("--adapt-bin")
     ap.add_argument("--smoke", action="store_true", help="plumbing test; the verdict can never be promoted")
     ap.add_argument("--limit", type=int, default=0, help="smoke only: cap items per set")
+    ap.add_argument("--probe", help="thinking-off probe JSON: adds the report-only lens section")
     a = ap.parse_args()
 
     import torch
@@ -111,6 +190,8 @@ def main():
             die("at least one --canary file is required")
         if a.limit:
             die("--limit is for smoke runs only")
+        if a.adapter and (pr.get("lens") or {}).get("eval_report") and not a.probe:
+            die("the PREREG says lens.eval_report is true: pass --probe (the pinned thinking-off probe)")
     thinking = pr["thinking"]
     if thinking != "off":
         die("only thinking=off is supported (see train_lora.py, F9)")
@@ -250,6 +331,8 @@ def main():
         if a.smoke:
             reasons.append("smoke run")
 
+    lens_report = lens_eval(a, pr, model, tok, held, canary, results, adapter_ctx, a.out) if a.probe else None
+
     # Review file: a seeded sample of heldout items plus every canary regression.
     rng = random.Random(pr["lora"]["seed"])
     k = max(1, math.ceil(g["review_fraction"] * len(held)))
@@ -287,6 +370,7 @@ def main():
         "summary": summary,
         "comparisons": comparisons,
         "drift": drift,
+        "lens": lens_report,
         "verdict": ("pass" if not reasons else "fail") if a.adapter else "n/a (no adapter)",
         "reasons": reasons,
         "review_file": os.path.abspath(os.path.join(a.out, "review.jsonl")),
@@ -294,6 +378,8 @@ def main():
     }
     common.write_json(os.path.join(a.out, "verdict.json"), verdict)
     print(json.dumps({k: verdict[k] for k in ("summary", "comparisons", "drift", "verdict", "reasons")}, indent=2))
+    if lens_report:
+        print("lens (report only):", json.dumps({k: v for k, v in lens_report.items() if k != "probe"}, indent=2))
     print(f"\nverdict -> {os.path.join(a.out, 'verdict.json')}")
 
 

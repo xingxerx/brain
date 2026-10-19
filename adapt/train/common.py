@@ -48,6 +48,14 @@ def canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def lens_filter_sha(body):
+    """Identity of a lens filter decision: what was filtered, by which probe, under which
+    rules, and the outcome. Lives here (not in lens.py) so train_lora.py can check a
+    filter file without importing any lens code."""
+    keys = ("export_chain_head", "train_sha256", "probe_sha256", "prereg_sha256", "settings", "dropped")
+    return sha256_text(canonical({k: body[k] for k in keys}))
+
+
 # ------------------------------------------------------------ rules shared with Rust
 
 
