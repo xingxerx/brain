@@ -2,7 +2,7 @@
   "version": 1,
   "base_model": "Qwen/Qwen3.5-4B",
   "thinking": "off",
-  "serving_precision": "TODO",
+  "serving_precision": "int8-t0",
   "heldout_frac": 0.2,
   "min_corrections": 150,
   "min_heldout_gradable": 30,
@@ -39,7 +39,7 @@
   "live": { "min_interactions": 100, "tolerance": 0.25 },
   "lens": {
     "filter": true,
-    "probe_sha256": "TODO",
+    "probe_sha256": "bcbeb45195bc84d709b5e78e43f7ec9bced411d0f9cb3b8f23a86eefd25e92e9",
     "drop_confidence": 0.9,
     "max_drop_frac": 0.2,
     "eval_report": true
