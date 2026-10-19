@@ -1,0 +1,19 @@
+{
+  "normalize": [
+    ["Delete   the FILE, please!", "delete the file please"],
+    ["  What's 17*23?  ", "what s 17 23"],
+    ["naïve café", "naïve café"],
+    ["tabs\tand\nnewlines", "tabs and newlines"],
+    ["", ""]
+  ],
+  "extract_decision": [
+    ["{\"decision\": \"ask\", \"question\": \"which file?\"}", "ask"],
+    ["{\"thought\":\"x\",\"decision\":\"act\",\"tool\":\"calculator\"}", "act"],
+    ["{\"decision\": \"maybe\"} then {\"decision\": \"abort\"}", "abort"],
+    [" Abort ", "abort"],
+    ["I would ask", null],
+    ["{\"decision\": \"maybe\"}", null],
+    ["{\"decision\" :\n \"answer\" }", "answer"],
+    ["{\"decision\": \"answer_now\"}", null]
+  ]
+}

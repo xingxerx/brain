@@ -92,7 +92,43 @@ enum Cmd {
     /// Check the model server (and the sidecar, if a lens gate is in use).
     Check,
     /// Run one request interactively. If the agent asks, you answer in the terminal.
-    Ask { request: String },
+    Ask {
+        request: String,
+        /// Put relevant past corrections (adapt/) in front of the system prompt.
+        /// Interactive use only: eval and dump-prompts never use it, so the lens
+        /// experiment and the probe always see the plain prompt.
+        #[arg(long)]
+        adapt: bool,
+    },
+    /// Record a correction for a finished `ask` (or eval) run's first step, into adapt/data.
+    /// Takes the exact system prompt, request and model reply from the run log.
+    Correct {
+        /// The run folder, e.g. runs\2026-10-19_run1_ask
+        run: PathBuf,
+        /// Which task in the run (eval runs hold many; ask runs hold one).
+        #[arg(long)]
+        task: Option<String>,
+        /// What the model should have replied (one JSON proposal for decision fixes).
+        #[arg(long, conflicts_with = "correction_file")]
+        correction: Option<String>,
+        #[arg(long)]
+        correction_file: Option<PathBuf>,
+        /// decision | answer | format | other
+        #[arg(long, default_value = "decision")]
+        kind: String,
+        #[arg(long)]
+        check_decision: Option<String>,
+        #[arg(long)]
+        check_contains: Vec<String>,
+        #[arg(long)]
+        check_exact: bool,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        supersede: Vec<String>,
+        #[arg(long)]
+        allow_conflict: bool,
+    },
     /// Summarize a finished eval run as a failure taxonomy with fix hints.
     Report {
         /// A run folder, e.g. runs/1760000000000-eval-dev-text
@@ -172,7 +208,32 @@ fn main() -> Result<()> {
             eprintln!("wrote {} prompts to {}", chosen.len(), out.display());
             Ok(())
         }
-        Cmd::Ask { request } => {
+        Cmd::Correct {
+            run,
+            task,
+            correction,
+            correction_file,
+            kind,
+            check_decision,
+            check_contains,
+            check_exact,
+            tag,
+            supersede,
+            allow_conflict,
+        } => correct(
+            run,
+            task.as_deref(),
+            correction.clone(),
+            correction_file.clone(),
+            kind,
+            check_decision.clone(),
+            check_contains.clone(),
+            *check_exact,
+            tag.clone(),
+            supersede.clone(),
+            *allow_conflict,
+        ),
+        Cmd::Ask { request, adapt } => {
             let llm = client(&cli)?;
             let tools = Tools::new(&cli.workspace)?;
             let agent = Agent {
@@ -184,8 +245,38 @@ fn main() -> Result<()> {
                 ask_mode: AskMode::Interactive,
                 verbose: true,
             };
-            let mut log = log::RunLog::create(&cli.runs_dir, "ask")?;
-            let r = agent.run("ask", request, &mut log)?;
+            let mut log =
+                log::RunLog::create(&cli.runs_dir, if *adapt { "ask-adapt" } else { "ask" })?;
+            let context = if *adapt {
+                let (k, min_coverage) = adapt_retrieval_settings();
+                let inf = ::adapt::for_request(
+                    std::path::Path::new(::adapt::DEFAULT_DIR),
+                    request,
+                    k,
+                    min_coverage,
+                )?;
+                if inf.hit_ids.is_empty() {
+                    eprintln!("adapt: no relevant past corrections");
+                } else {
+                    eprintln!("adapt: using corrections {}", inf.hit_ids.join(", "));
+                }
+                if let Some(a) = &inf.adapter {
+                    eprintln!(
+                        "adapt: adapter {} is promoted, but this client only does retrieval; \
+                         the sidecar has to load the adapter itself (adapt/INTEGRATION.md step 4)",
+                        a.adapter_id
+                    );
+                }
+                log.write_json(
+                    "adapt.json",
+                    &serde_json::json!({"hit_ids": inf.hit_ids, "context": inf.context,
+                        "adapter": inf.adapter.as_ref().map(|a| &a.adapter_id)}),
+                )?;
+                inf.context
+            } else {
+                String::new()
+            };
+            let r = agent.run_with_context("ask", request, &context, &mut log)?;
             match &r.outcome {
                 Outcome::Answered(a) => println!("\n{a}"),
                 Outcome::Aborted(why) => println!("\naborted: {why}"),
@@ -233,6 +324,146 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// k and min_coverage from adapt/prereg.json, so the loop retrieves exactly like eval does.
+fn adapt_retrieval_settings() -> (usize, f64) {
+    let v: serde_json::Value = std::fs::read_to_string("adapt/prereg.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    (
+        v.pointer("/retrieval/k")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(3) as usize,
+        v.pointer("/retrieval/min_coverage")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.5),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn correct(
+    run: &std::path::Path,
+    task: Option<&str>,
+    correction: Option<String>,
+    correction_file: Option<PathBuf>,
+    kind: &str,
+    check_decision: Option<String>,
+    check_contains: Vec<String>,
+    check_exact: bool,
+    tag: Option<String>,
+    supersede: Vec<String>,
+    allow_conflict: bool,
+) -> Result<()> {
+    use ::adapt::store::{AddOptions, Check, CorrectionStore, NewCorrection};
+    let path = run.join("steps.jsonl");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let step1: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v["step"].as_u64() == Some(1))
+        .filter(|v| task.is_none_or(|t| v["task_id"].as_str() == Some(t)))
+        .collect();
+    let rec = match step1.as_slice() {
+        [one] => one,
+        [] => bail!(
+            "no step-1 record{} in {}",
+            task.map(|t| format!(" for task {t}")).unwrap_or_default(),
+            path.display()
+        ),
+        _ => bail!(
+            "{} step-1 records in this run; pick one with --task",
+            step1.len()
+        ),
+    };
+    let msgs = rec["messages"].as_array().cloned().unwrap_or_default();
+    let get = |role: &str| {
+        msgs.iter()
+            .find(|m| m["role"].as_str() == Some(role))
+            .and_then(|m| m["content"].as_str())
+            .map(String::from)
+    };
+    let mut system =
+        get("system").ok_or_else(|| anyhow::anyhow!("step 1 has no system message"))?;
+    let prompt = get("user").ok_or_else(|| anyhow::anyhow!("step 1 has no user message"))?;
+    // Train on the plain system prompt: a run made with --adapt already has the
+    // retrieved corrections in front, and training adds its own context.
+    if let Ok(a) = std::fs::read_to_string(run.join("adapt.json")) {
+        let a: serde_json::Value = serde_json::from_str(&a)?;
+        if let Some(ctx) = a["context"].as_str().filter(|c| !c.trim().is_empty()) {
+            let prefix = format!("{}\n\n", ctx.trim());
+            system = system
+                .strip_prefix(&prefix)
+                .map(String::from)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "run used adapt context but the system prompt doesn't start with it"
+                    )
+                })?;
+        }
+    }
+    let correction = match (correction, correction_file) {
+        (Some(c), _) => c,
+        (None, Some(f)) => std::fs::read_to_string(&f)?,
+        (None, None) => bail!("--correction or --correction-file is required"),
+    };
+    let n_checks = [
+        check_decision.is_some(),
+        !check_contains.is_empty(),
+        check_exact,
+    ]
+    .iter()
+    .filter(|x| **x)
+    .count();
+    if n_checks > 1 {
+        bail!("pick one check: --check-decision, --check-contains or --check-exact");
+    }
+    let check = if let Some(d) = check_decision {
+        Check::Decision { value: d }
+    } else if !check_contains.is_empty() {
+        Check::Contains {
+            value: check_contains,
+        }
+    } else if check_exact {
+        Check::Exact
+    } else if kind == "decision" {
+        // Default for decision fixes: the check is the decision in the correction itself.
+        match ::adapt::store::extract_decision(&correction) {
+            Some(d) => Check::Decision { value: d },
+            None => bail!("no decision found in the correction; pass --check-decision"),
+        }
+    } else {
+        Check::None
+    };
+    let heldout_frac = std::fs::read_to_string("adapt/prereg.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["heldout_frac"].as_f64())
+        .unwrap_or(0.2);
+    let store = CorrectionStore::open(::adapt::DEFAULT_DIR);
+    let c = store.add(
+        NewCorrection {
+            prompt,
+            system: Some(system),
+            model_output: rec["raw"].as_str().unwrap_or_default().to_string(),
+            correction,
+            kind: kind.to_string(),
+            check: Some(check),
+            tag,
+            source: "brain-user".into(),
+        },
+        &AddOptions {
+            supersede,
+            allow_conflict,
+            heldout_frac,
+            now: None,
+        },
+    )?;
+    println!("added {} ({})", c.id, c.split);
+    Ok(())
 }
 
 fn client(cli: &Cli) -> Result<OpenAiCompatClient> {

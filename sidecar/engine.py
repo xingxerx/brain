@@ -41,8 +41,24 @@ def fast_path_report():
 
 
 def load_model(precision, allow_unvalidated=False):
+    import warnings
+
     import torch
     import transformers
+
+    # bitsandbytes repeats this on every forward pass (thousands of lines). It is expected: int8
+    # matmuls run in fp16. Silence it so real output stays readable.
+    warnings.filterwarnings("ignore", message=".*inputs will be cast from torch.bfloat16 to float16.*")
+    import logging
+
+    class _DropCast(logging.Filter):
+        def filter(self, record):
+            return "inputs will be cast from" not in record.getMessage()
+
+    for name in ("bitsandbytes", "bitsandbytes.autograd._functions", ""):
+        logging.getLogger(name).addFilter(_DropCast())
+    for h in logging.getLogger().handlers:
+        h.addFilter(_DropCast())
 
     if precision not in KNOWN:
         sys.exit(f"PRECISION={precision}: use one of {sorted(KNOWN)}")

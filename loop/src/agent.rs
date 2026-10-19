@@ -88,11 +88,27 @@ pub fn system_prompt() -> String {
 
 impl Agent<'_> {
     pub fn run(&self, task_id: &str, request: &str, log: &mut RunLog) -> Result<RunResult> {
+        self.run_with_context(task_id, request, "", log)
+    }
+
+    /// Same loop, with a block (past corrections from `adapt`) placed in front of the
+    /// system prompt. Empty context gives byte-identical messages to `run`. The join rule
+    /// must match adapt/train/common.py::messages_for, which training and eval use.
+    pub fn run_with_context(
+        &self,
+        task_id: &str,
+        request: &str,
+        context: &str,
+        log: &mut RunLog,
+    ) -> Result<RunResult> {
         let run_id = log.run_id.clone();
-        let mut messages = vec![
-            ChatMessage::system(system_prompt()),
-            ChatMessage::user(request),
-        ];
+        let base = system_prompt();
+        let system = if context.trim().is_empty() {
+            base
+        } else {
+            format!("{}\n\n{}", context.trim(), base.trim())
+        };
+        let mut messages = vec![ChatMessage::system(system), ChatMessage::user(request)];
         let mut res = RunResult {
             outcome: Outcome::StepLimit,
             steps: 0,

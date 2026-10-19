@@ -1,0 +1,7 @@
+# Same venv as jspace-lab / the sidecar (torch with CUDA for the 5080 from pytorch.org).
+torch
+transformers
+peft
+accelerate
+# bitsandbytes only for eval/serving at int8; training is plain bf16
+bitsandbytes

@@ -217,3 +217,12 @@ python sidecar\server.py --precision bf16 --probe sidecar\probe_bf16.json
 - Next: collect activations, train the probe, score dev against the text gate and bag-of-words.
 - Open question for PREREG: the text gate is at ceiling on dev, so "lens beats text by 10 points"
   can't pass on tasks like these. See the scan notes before locking.
+
+## adapt (learning from corrections)
+
+`adapt/` keeps your corrections and feeds them back in. `brain correct <run>` records what the first
+decision should have been, and `brain ask --adapt` puts relevant past corrections in front of the
+system prompt. Stage 2 (a LoRA adapter that has to beat that baseline under a locked PREREG) and
+stage 3 (gated promotion with automatic rollback) are in `adapt/README.md`.
+`eval` and `dump-prompts` never use adapt, so the lens experiment is unaffected.
+
