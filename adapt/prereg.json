@@ -6,7 +6,15 @@
   "heldout_frac": 0.2,
   "min_corrections": 150,
   "min_heldout_gradable": 30,
-  "retrieval": { "k": 3, "min_coverage": 0.5 },
+  "retrieval": {
+    "k": 3,
+    "min_coverage": 0.5,
+    "semantic": {
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "url": "http://localhost:1234/v1",
+      "min_similarity": 0.45
+    }
+  },
   "generation": { "max_new_tokens": 384 },
   "lora": {
     "r": 16,

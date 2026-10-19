@@ -20,7 +20,7 @@ const K1: f64 = 1.2;
 const STOP: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "how",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "please", "that", "the", "this", "to",
-    "was", "what", "with", "you", "your",
+    "was", "what", "with", "you", "your", "where", "when", "which", "who", "why", "there",
 ];
 
 fn terms(s: &str) -> Vec<String> {
@@ -41,6 +41,19 @@ pub struct Hit {
     /// For a later-step correction: the observation the model had just seen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub situation: Option<String>,
+    /// Cosine similarity of meaning, when retrieval by meaning was available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f64>,
+}
+
+/// Why each train-split correction did or didn't match (for `retrieve --explain`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Explained {
+    pub id: String,
+    pub prompt: String,
+    pub coverage: f64,
+    pub similarity: Option<f64>,
+    pub hit: bool,
 }
 
 pub struct Index {
@@ -86,6 +99,11 @@ impl Index {
         self.docs.is_empty()
     }
 
+    /// The text that is embedded for each document, in index order.
+    pub fn doc_prompts(&self) -> Vec<&str> {
+        self.docs.iter().map(|(c, _)| c.prompt.as_str()).collect()
+    }
+
     fn idf(&self, w: &str) -> f64 {
         let n = self.docs.len() as f64;
         let d = *self.df.get(w).unwrap_or(&0) as f64;
@@ -112,39 +130,68 @@ impl Index {
         min_coverage: f64,
         exclude: &[String],
     ) -> Vec<Hit> {
+        self.search_full(query, k, min_coverage, exclude, None).0
+    }
+
+    /// The general search. `sims`, when given, holds one cosine similarity per document in
+    /// index order, plus the threshold. A document is a hit if it covers `min_coverage` of the
+    /// query's content words (exact repeats always match) OR its meaning is at least
+    /// `min_similarity` close. With similarities, hits rank by similarity; without, by BM25.
+    pub fn search_full(
+        &self,
+        query: &str,
+        k: usize,
+        min_coverage: f64,
+        exclude: &[String],
+        sims: Option<(&[f64], f64)>,
+    ) -> (Vec<Hit>, Vec<Explained>) {
         let mut q = terms(query);
         q.sort();
         q.dedup();
-        let mut hits: Vec<Hit> = self
-            .docs
-            .iter()
-            .filter(|(c, _)| !exclude.contains(&c.id))
-            .filter_map(|(c, t)| {
-                let len = t.len() as f64;
-                let matched = q.iter().filter(|w| t.contains(w)).count();
-                let coverage = if q.is_empty() {
-                    0.0
-                } else {
-                    matched as f64 / q.len() as f64
-                };
-                let mut score = 0.0;
-                for w in &q {
-                    let tf = t.iter().filter(|x| *x == w).count() as f64;
-                    if tf > 0.0 {
-                        score += self.idf(w) * tf * (K1 + 1.0)
-                            / (tf + K1 * (1.0 - B + B * len / self.avg_len));
-                    }
+        let mut explained = vec![];
+        let mut hits: Vec<Hit> = vec![];
+        for (i, (c, t)) in self.docs.iter().enumerate() {
+            if exclude.contains(&c.id) {
+                continue;
+            }
+            let len = t.len() as f64;
+            let matched = q.iter().filter(|w| t.contains(w)).count();
+            let coverage = if q.is_empty() {
+                0.0
+            } else {
+                matched as f64 / q.len() as f64
+            };
+            let mut bm25 = 0.0;
+            for w in &q {
+                let tf = t.iter().filter(|x| *x == w).count() as f64;
+                if tf > 0.0 {
+                    bm25 += self.idf(w) * tf * (K1 + 1.0)
+                        / (tf + K1 * (1.0 - B + B * len / self.avg_len));
                 }
-                (coverage >= min_coverage && matched > 0).then(|| Hit {
+            }
+            let sim = sims.map(|(v, _)| v[i]);
+            let lexical = coverage >= min_coverage && matched > 0;
+            let semantic = matches!((sim, sims), (Some(x), Some((_, min))) if x >= min);
+            let hit = lexical || semantic;
+            explained.push(Explained {
+                id: c.id.clone(),
+                prompt: c.prompt.clone(),
+                coverage: (coverage * 1e3).round() / 1e3,
+                similarity: sim.map(|x| (x * 1e4).round() / 1e4),
+                hit,
+            });
+            if hit {
+                hits.push(Hit {
                     id: c.id.clone(),
-                    score: (score * 1e4).round() / 1e4,
+                    score: (sim.unwrap_or(bm25) * 1e4).round() / 1e4,
                     prompt: c.prompt.clone(),
                     model_output: c.model_output.clone(),
                     correction: c.correction.clone(),
                     situation: c.history.last().map(|m| m.content.clone()),
-                })
-            })
-            .collect();
+                    similarity: sim.map(|x| (x * 1e4).round() / 1e4),
+                });
+            }
+        }
         hits.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -152,12 +199,15 @@ impl Index {
                 .then_with(|| a.id.cmp(&b.id))
         });
         hits.truncate(k);
-        hits
+        (hits, explained)
     }
 }
 
+/// One line per field: multi-line observations and pretty-printed JSON would otherwise break
+/// the bullet layout (seen in run 8, where the listing spilled over six lines).
 fn clip(s: &str, n: usize) -> String {
-    let s = s.trim();
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s = flat.as_str();
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -245,6 +295,30 @@ mod tests {
             &["a".to_string()],
         );
         assert!(ex.iter().all(|h| h.id != "a"));
+    }
+
+    #[test]
+    fn similarity_adds_hits_word_match_misses() {
+        let live = vec![
+            c("a", "where is player-harness", "train"),
+            c("b", "what is 17 times 23", "train"),
+        ];
+        let idx = Index::build(&live);
+        // Word match: "limen repo" shares no content word with either.
+        assert!(idx.search("where is the LIMEN repo", 3, 0.5).is_empty());
+        // Meaning: pretend the embedder says (a) is close and (b) is not.
+        let sims = [0.82, 0.31];
+        let (hits, ex) =
+            idx.search_full("where is the LIMEN repo", 3, 0.5, &[], Some((&sims, 0.7)));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "a");
+        assert_eq!(hits[0].similarity, Some(0.82));
+        assert_eq!(ex.len(), 2);
+        assert!(ex[0].hit && !ex[1].hit);
+        // An exact repeat still matches even if the embedder scores it low.
+        let low = [0.1, 0.1];
+        let (h2, _) = idx.search_full("where is player-harness", 3, 0.5, &[], Some((&low, 0.7)));
+        assert_eq!(h2[0].id, "a");
     }
 
     #[test]

@@ -34,7 +34,7 @@ struct Cli {
     base_url: String,
 
     /// Model id as the server lists it.
-    #[arg(long, global = true, default_value = "google/gemma-4-12b-qat")]
+    #[arg(long, global = true, default_value = "qwen3-8b")]
     model: String,
 
     #[arg(long, global = true, default_value_t = 0.0)]
@@ -79,8 +79,9 @@ struct Cli {
     no_think: bool,
 
     /// After this many searches in a row (list_dir/read_file) find nothing related to the
-    /// request, the next search is overridden to an answer. Off by default. It changes behavior,
-    /// so never use it for the lens experiment; eval runs with it are labeled -budgetN.
+    /// request, the next search is overridden to an answer. Default: 2 for `ask`, off for
+    /// everything else (so eval and the lens experiment are unchanged). 0 turns it off.
+    /// Eval runs that set it are labeled -budgetN.
     #[arg(long, global = true)]
     search_budget: Option<usize>,
 
@@ -176,6 +177,9 @@ enum Cmd {
     },
 }
 
+/// `ask` stops wandering after this many unrelated searches unless --search-budget says otherwise.
+const DEFAULT_ASK_BUDGET: usize = 2;
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -192,13 +196,16 @@ fn main() -> Result<()> {
         GateKind::Text => &text,
         GateKind::Lens => lens.as_ref().expect("lens gate constructed"),
     };
-    let budgeted = cli.search_budget.map(|b| budget::BudgetGate {
+    // Everyday use (`ask`) gets the budget by default; measured runs only when asked for.
+    let search_budget: Option<usize> = match &cli.cmd {
+        Cmd::Ask { .. } => Some(cli.search_budget.unwrap_or(DEFAULT_ASK_BUDGET)),
+        _ => cli.search_budget,
+    }
+    .filter(|b| *b > 0);
+    let budgeted = search_budget.map(|b| budget::BudgetGate {
         inner: gate,
         budget: b,
     });
-    if cli.search_budget == Some(0) {
-        bail!("--search-budget must be at least 1");
-    }
     let gate: &dyn Gate = match &budgeted {
         Some(b) => b,
         None => gate,
@@ -282,23 +289,31 @@ fn main() -> Result<()> {
                 &format!(
                     "ask{}{}",
                     if *adapt { "-adapt" } else { "" },
-                    cli.search_budget
+                    search_budget
                         .map(|b| format!("-budget{b}"))
                         .unwrap_or_default()
                 ),
             )?;
             let context = if *adapt {
-                let (k, min_coverage) = adapt_retrieval_settings();
+                let cfg = ::adapt::RetrievalConfig::from_prereg(std::path::Path::new(
+                    "adapt/prereg.json",
+                ));
                 let inf = ::adapt::for_request(
                     std::path::Path::new(::adapt::DEFAULT_DIR),
                     request,
-                    k,
-                    min_coverage,
+                    &cfg,
                 )?;
+                if let Some(w) = &inf.warning {
+                    eprintln!("adapt: {w}");
+                }
                 if inf.hit_ids.is_empty() {
-                    eprintln!("adapt: no relevant past corrections");
+                    eprintln!("adapt: no relevant past corrections ({})", inf.mode);
                 } else {
-                    eprintln!("adapt: using corrections {}", inf.hit_ids.join(", "));
+                    eprintln!(
+                        "adapt: using corrections {} ({})",
+                        inf.hit_ids.join(", "),
+                        inf.mode
+                    );
                 }
                 if let Some(a) = &inf.adapter {
                     eprintln!(
@@ -309,7 +324,8 @@ fn main() -> Result<()> {
                 }
                 log.write_json(
                     "adapt.json",
-                    &serde_json::json!({"hit_ids": inf.hit_ids, "context": inf.context,
+                    &serde_json::json!({"hit_ids": inf.hit_ids, "context": inf.context, "mode": inf.mode,
+                        "warning": inf.warning,
                         "adapter": inf.adapter.as_ref().map(|a| &a.adapter_id)}),
                 )?;
                 inf.context
@@ -358,7 +374,7 @@ fn main() -> Result<()> {
                 &format!(
                     "eval-{split}-{}{}",
                     gate.name(),
-                    cli.search_budget
+                    search_budget
                         .map(|b| format!("-budget{b}"))
                         .unwrap_or_default()
                 ),
@@ -414,22 +430,6 @@ fn budget_replay(dir: &std::path::Path, budget: usize) -> Result<()> {
         tasks_hit.into_iter().collect::<Vec<_>>().join(", ")
     );
     Ok(())
-}
-
-/// k and min_coverage from adapt/prereg.json, so the loop retrieves exactly like eval does.
-fn adapt_retrieval_settings() -> (usize, f64) {
-    let v: serde_json::Value = std::fs::read_to_string("adapt/prereg.json")
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    (
-        v.pointer("/retrieval/k")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(3) as usize,
-        v.pointer("/retrieval/min_coverage")
-            .and_then(|x| x.as_f64())
-            .unwrap_or(0.5),
-    )
 }
 
 #[allow(clippy::too_many_arguments)]

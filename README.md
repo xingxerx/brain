@@ -190,7 +190,8 @@ python sidecar\server.py --precision bf16 --probe sidecar\probe_bf16.json
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--model` | `google/gemma-4-12b-qat` | Model id as the server lists it |
+| `--model` | `qwen3-8b` | Model id as the server lists it. Was `google/gemma-4-12b-qat` until Oct 18 2026: the dev text-gate runs 1 to 5 used Gemma, so pass `--model google/gemma-4-12b-qat` to reproduce them |
+| `--search-budget` | `2` for `ask`, off otherwise | See Search budget below. `0` turns it off |
 | `--base-url` | `http://localhost:1234/v1` | Any OpenAI-compatible server (sidecar: `http://127.0.0.1:8765/v1`) |
 | `--gate` | `text` | `text` trusts the model's decision, `lens` asks the sidecar |
 | `--shadow-lens` | off | Log the lens decision next to the text one without acting on it |
@@ -230,8 +231,8 @@ stage 3 (gated promotion with automatic rollback) are in `adapt/README.md`.
 
 `--search-budget N` stops the agent from wandering: after N searches in a row (`list_dir` /
 `read_file`) turn up nothing related to the request, the next search is overridden to an answer.
-Off by default. It changes behavior, so never use it for the lens experiment; eval runs that use it
-are labeled `-budgetN`. Opening the file the request names never counts, and calculator steps are
+On by default for `ask` (budget 2), off for `eval` and everything else, so the lens experiment is
+unchanged. `--search-budget 0` turns it off for `ask`; eval runs that set it are labeled `-budgetN`. Opening the file the request names never counts, and calculator steps are
 neutral. Replay any finished run to see where it would have fired:
 
 ```powershell
@@ -240,4 +241,10 @@ cargo run --release -- budget-replay runs\<run folder> --budget 2
 
 On the logs so far, a budget of 2 fires only on the two wandering failures (run 7 "where is
 player-harness", and ask-04 in runs 3 and 4), and never on a passing dev task.
+
+## Default model
+
+`qwen3-8b` (in LM Studio) is the default since Oct 18 2026. On "where is player-harness" it was
+about 10x faster than Gemma 4 12B (14.5 s vs about 150 s) and followed a retrieved correction where
+Gemma ignored it. That's one request, so treat it as a working default, not a benchmark result.
 

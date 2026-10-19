@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use adapt::export::export;
 use adapt::ledger::{Ledger, LiveOutcome};
-use adapt::retrieve::{format_context, Index};
+use adapt::retrieve::format_context;
 use adapt::store::{AddOptions, Check, Conflict, CorrectionStore, NewCorrection};
 
 #[derive(Parser)]
@@ -62,6 +62,14 @@ enum Cmd {
         /// Never return these ids (training uses leave-one-out). Repeatable.
         #[arg(long)]
         exclude: Vec<String>,
+        /// Fail instead of falling back to word match if retrieval by meaning is configured
+        /// but the embedding server is unavailable (training and eval pass this).
+        #[arg(long)]
+        strict: bool,
+        /// Show every train-split correction with its word coverage and meaning similarity,
+        /// to calibrate retrieval.min_similarity.
+        #[arg(long)]
+        explain: bool,
     },
     /// Freeze the live set for training and eval.
     Export {
@@ -404,23 +412,63 @@ fn main() -> Result<()> {
             min_coverage,
             json,
             exclude,
+            strict,
+            explain,
         } => {
-            let k = k.unwrap_or(num("/retrieval/k", 3.0) as usize);
-            let min_coverage = min_coverage.unwrap_or(num("/retrieval/min_coverage", 0.5));
-            let idx = Index::build(&store.live()?);
-            let hits = idx.search_excluding(&query, k, min_coverage, &exclude);
+            let mut cfg = adapt::RetrievalConfig::from_prereg_value(pr.as_ref());
+            if let Some(k) = k {
+                cfg.k = k;
+            }
+            if let Some(m) = min_coverage {
+                cfg.min_coverage = m;
+            }
+            let r = adapt::retrieve(&dir, &query, &cfg, &exclude, strict)?;
+            if let Some(w) = &r.warning {
+                eprintln!("note: {w}");
+            }
             if json {
                 println!(
                     "{}",
-                    json!({"hits": hits, "context": format_context(&hits), "index_size": idx.len()})
+                    json!({"hits": r.hits, "context": format_context(&r.hits),
+                           "index_size": r.index_size, "mode": r.mode})
                 );
-            } else if hits.is_empty() {
+            } else if explain {
                 println!(
-                    "(no relevant corrections among {} train-split entries)",
-                    idx.len()
+                    "mode: {}  (min_coverage {}, min_similarity {})",
+                    r.mode,
+                    cfg.min_coverage,
+                    cfg.semantic
+                        .as_ref()
+                        .map(|s| s.min_similarity.to_string())
+                        .unwrap_or("-".into())
+                );
+                let mut ex = r.explained.clone();
+                ex.sort_by(|a, b| {
+                    b.similarity
+                        .unwrap_or(0.0)
+                        .partial_cmp(&a.similarity.unwrap_or(0.0))
+                        .unwrap()
+                });
+                for e in ex {
+                    let p: String = e.prompt.chars().take(60).collect();
+                    println!(
+                        "{} {}  words {:.2}  meaning {}  {}",
+                        if e.hit { "HIT " } else { "    " },
+                        e.id,
+                        e.coverage,
+                        e.similarity
+                            .map(|x| format!("{x:.3}"))
+                            .unwrap_or("-".into()),
+                        p.replace('\n', " ")
+                    );
+                }
+            } else if r.hits.is_empty() {
+                println!(
+                    "(no relevant corrections among {} train-split entries, {})",
+                    r.index_size, r.mode
                 );
             } else {
-                print!("{}", format_context(&hits));
+                print!("{}", format_context(&r.hits));
             }
         }
         Cmd::Export { out } => {

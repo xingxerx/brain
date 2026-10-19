@@ -5,3 +5,4 @@ adapters/
 evals/
 __pycache__/
 # Keep data/corrections.jsonl and data/adapters.jsonl: they are the asset and the audit trail.
+data/embeddings.jsonl

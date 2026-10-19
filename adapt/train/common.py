@@ -153,7 +153,9 @@ class Retriever:
         key = (query, tuple(exclude))
         if key not in self.cache:
             extra = [x for e in exclude for x in ("--exclude", e)]
-            out = run_bin(*self.args, "retrieve", "--json", "--k", str(self.k),
+            # --strict: never silently fall back to word match if the PREREG asks for
+            # retrieval by meaning and the embedding server is down.
+            out = run_bin(*self.args, "retrieve", "--json", "--strict", "--k", str(self.k),
                           "--min-coverage", str(self.min_coverage), *extra, "--", query)
             self.cache[key] = json.loads(out)
         return self.cache[key]

@@ -124,6 +124,35 @@ Each correction needs one check so eval never needs a model to grade it:
 | `decision` | `--check-decision act\|answer\|ask\|abort` (required) |
 | `answer`, `format`, `other` | `--check-contains <s>` (repeatable), `--check-exact`, or none (then it's ungradable) |
 
+### Retrieval by meaning
+
+Word match only finds near-exact repeats: "where is the LIMEN repo" never reached the
+"where is player-harness" correction (run 13). So retrieval also compares **meaning**, using the
+embedding model LM Studio already has (`text-embedding-nomic-embed-text-v1.5`). A past correction
+is used if it shares half the request's content words **or** its meaning is at least
+`retrieval.semantic.min_similarity` close (0.45, from the first calibration below). Settings are in `prereg.json`:
+
+```json
+"semantic": { "model": "text-embedding-nomic-embed-text-v1.5", "url": "http://localhost:1234/v1", "min_similarity": 0.45 }
+```
+
+- LM Studio's server must be running (`lms server start`). It loads the embedding model on first use, or load it yourself: `lms load text-embedding-nomic-embed-text-v1.5`.
+- If it isn't reachable, `brain ask --adapt` says so and falls back to word match. Training and eval never fall back: they stop, so a run can't silently retrieve differently from what the PREREG says.
+- Each correction is embedded once and cached in `data/embeddings.jsonl` (safe to delete).
+- Set `"semantic": null` to go back to word match only. Use `BRAIN_EMBED_URL` to point at another server.
+
+**Calibrate the threshold** on your own corrections. First calibration (Oct 18 2026, nomic-embed-text v1.5, one stored correction): "where is the LIMEN repo" scored 0.498 against "where is player-harness" (should match), "what is 17 times 23" scored 0.371 (should not). 0.45 sits between them. Two points is thin: recalibrate once you have 20 to 30 corrections. See every stored correction's word overlap and meaning similarity for a request:
+
+```powershell
+cargo adapt retrieve --explain "where is the LIMEN repo"
+```
+
+```powershell
+cargo adapt retrieve --explain "what is 17 times 23"
+```
+
+Pick `min_similarity` between the scores of requests that should match and ones that shouldn't. Do it before locking the PREREG.
+
 Other commands:
 
 ```powershell
@@ -239,6 +268,7 @@ exits with code 2. Retrain from the same corrections. The corrections are the as
 | F15 | store edited between export and train/eval | train and eval refuse a stale export |
 | F16 | a fixed BM25 cutoff retrieved nothing while the store was small (found in the loop test) | a hit must cover `retrieval.min_coverage` (half) of the request's content words; BM25 only ranks |
 | F17 | most real mistakes happen mid-run, but corrections only covered step 1 (found on "where is player-harness") | `brain correct --step N` keeps the conversation up to step N as `history`; training, eval and retrieval use it, and a test confirms the rebuilt prompt is byte-identical to what the loop sent |
+| F18 | word match only retrieved exact repeats (run 13: the LIMEN request never saw the player-harness lesson) | retrieval also compares meaning with a local embedding model; word match stays as the fallback; training and eval refuse to fall back |
 
 ## Not yet verified
 

@@ -99,6 +99,9 @@ def main():
         with open(os.path.join(ADAPT, "prereg.json"), encoding="utf-8") as f:
             pr = json.load(f)
         pr["serving_precision"] = "fp32"
+        # CPU-only and offline: word-match retrieval. Retrieval by meaning needs the
+        # embedding server and is tested separately (cargo test, and README calibration).
+        pr["retrieval"]["semantic"] = None
         pr["generation"]["max_new_tokens"] = 24
         pr["gate"]["drift_prompts"] = 4
         pr["gate"]["drift_tokens"] = 8
